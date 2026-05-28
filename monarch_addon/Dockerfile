@@ -7,7 +7,7 @@ FROM ${BUILD_FROM}
 ARG BUILD_VERSION
 ENV PYTHONUNBUFFERED=1
 
-ADD https://github.com/ScopeXL/monarch/archive/refs/tags/v${BUILD_VERSION}.tar.gz /tmp/app.tar.gz
+ADD https://github.com/ScopeXL/ha-monarch/archive/refs/tags/v${BUILD_VERSION}.tar.gz /tmp/app.tar.gz
 RUN mkdir -p /app \
  && tar -xzf /tmp/app.tar.gz -C /app --strip-components=1 \
  && rm /tmp/app.tar.gz \
