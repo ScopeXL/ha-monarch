@@ -1,0 +1,549 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Monarch Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] },
+        },
+      },
+    };
+  </script>
+  <style>
+    body { font-family: 'Inter', system-ui, sans-serif; }
+    .skeleton { background: linear-gradient(90deg, #1e293b 0%, #334155 50%, #1e293b 100%); background-size: 200% 100%; animation: shimmer 1.4s infinite; }
+    @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen antialiased">
+  <header class="border-b border-slate-800 bg-slate-950/80 backdrop-blur sticky top-0 z-10">
+    <div class="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+      <div>
+        <h1 class="text-xl font-semibold tracking-tight">Monarch Dashboard</h1>
+        <p class="text-xs text-slate-400">Local dashboard · <span id="refreshed">never refreshed</span></p>
+      </div>
+      <button id="refresh" class="px-3 py-1.5 text-sm rounded-md bg-slate-800 hover:bg-slate-700 border border-slate-700 transition">
+        Refresh
+      </button>
+    </div>
+  </header>
+
+  <!-- Auth gate: shown until the server reports status=ready. -->
+  <div id="auth-banner" class="max-w-7xl mx-auto px-6 pt-8 hidden">
+    <div id="auth-banner-inner" class="rounded-xl bg-slate-900 border border-amber-500/30 p-6"></div>
+  </div>
+
+  <main class="max-w-7xl mx-auto px-6 py-8 space-y-6">
+    <!-- Net worth -->
+    <section id="card-balance" class="rounded-xl bg-slate-900 border border-slate-800 p-6">
+      <h2 class="text-sm font-medium text-slate-400 uppercase tracking-wider mb-4">Net worth</h2>
+      <div data-body class="grid grid-cols-1 sm:grid-cols-3 gap-6"></div>
+    </section>
+
+    <section id="card-accounts" class="rounded-xl bg-slate-900 border border-slate-800 p-6">
+      <h2 class="text-sm font-medium text-slate-400 uppercase tracking-wider mb-4">Accounts</h2>
+      <div data-body class="overflow-x-auto"></div>
+    </section>
+
+    <!-- Two-column grid -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <section id="card-cashflow" class="rounded-xl bg-slate-900 border border-slate-800 p-6">
+        <h2 class="text-sm font-medium text-slate-400 uppercase tracking-wider mb-4">Cashflow</h2>
+        <div data-body></div>
+      </section>
+
+      <section id="card-budgets" class="rounded-xl bg-slate-900 border border-slate-800 p-6">
+        <h2 class="text-sm font-medium text-slate-400 uppercase tracking-wider mb-4">Budgets</h2>
+        <div data-body class="overflow-x-auto"></div>
+      </section>
+    </div>
+
+    <section id="card-transactions" class="rounded-xl bg-slate-900 border border-slate-800 p-6">
+      <h2 class="text-sm font-medium text-slate-400 uppercase tracking-wider mb-4">Recent transactions</h2>
+      <div data-body class="overflow-x-auto"></div>
+    </section>
+
+    <section id="card-recurring" class="rounded-xl bg-slate-900 border border-slate-800 p-6">
+      <h2 class="text-sm font-medium text-slate-400 uppercase tracking-wider mb-4">Recurring</h2>
+      <div data-body class="overflow-x-auto"></div>
+    </section>
+
+    <section id="card-api" class="rounded-xl bg-slate-900 border border-slate-800 p-6">
+      <h2 class="text-sm font-medium text-slate-400 uppercase tracking-wider mb-1">API endpoints</h2>
+      <p class="text-xs text-slate-500 mb-4">Live links with real IDs and the current month plugged in. Click to view raw JSON.</p>
+      <div data-body></div>
+    </section>
+  </main>
+
+  <footer class="max-w-7xl mx-auto px-6 py-8 text-xs text-slate-500">
+    Bound to 127.0.0.1 · same data as <code class="text-slate-400">python monarch.py</code>
+  </footer>
+
+  <script>
+    const fmtMoney = (val) => {
+      if (val === null || val === undefined || val === '') return '';
+      const n = Number(val);
+      if (!Number.isFinite(n)) return String(val);
+      const sign = n < 0 ? '-' : '';
+      return sign + '$' + Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    };
+    const amountClass = (n) => (Number(n) < 0 ? 'text-rose-400' : 'text-emerald-400');
+    const escapeHTML = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+    const skeleton = (lines = 3) => {
+      let html = '<div class="space-y-2">';
+      for (let i = 0; i < lines; i++) html += '<div class="h-4 rounded skeleton" style="width:' + (60 + Math.random() * 40) + '%"></div>';
+      return html + '</div>';
+    };
+
+    const errorBlock = (msg) =>
+      '<div class="text-sm text-rose-400 bg-rose-950/30 border border-rose-900/50 rounded-md p-3">' +
+      'Failed to load. ' + (msg || '') + '</div>';
+
+    async function fetchJSON(path) {
+      const r = await fetch(path);
+      if (!r.ok) {
+        let body = '';
+        try { body = (await r.json()).detail || ''; } catch {}
+        throw new Error('HTTP ' + r.status + ' ' + body);
+      }
+      return r.json();
+    }
+
+    // Owns the container, re-renders on header click. Each column has a `key`
+    // that indexes into the row object; an optional `<key>HTML` field on the row
+    // is used for display while `<key>` is used for sorting.
+    function sortableTable(container, columns, rows, defaultSort) {
+      let sortKey = defaultSort.key;
+      let sortDir = defaultSort.dir;
+
+      function compare(a, b) {
+        const av = a[sortKey], bv = b[sortKey];
+        if (typeof av === 'number' && typeof bv === 'number') return av - bv;
+        return String(av ?? '').localeCompare(String(bv ?? ''), undefined, { sensitivity: 'base', numeric: true });
+      }
+
+      function render() {
+        const sorted = rows.slice().sort((a, b) => sortDir === 'asc' ? compare(a, b) : -compare(a, b));
+
+        const head = columns.map(c => {
+          const active = c.key === sortKey;
+          const arrow = active ? (sortDir === 'asc' ? '↑' : '↓') : '';
+          const align = c.align === 'right' ? 'text-right' : 'text-left';
+          const activeCls = active ? 'text-slate-200' : 'text-slate-400';
+          return `<th data-sort-key="${c.key}" class="cursor-pointer select-none ${align} text-xs font-medium uppercase tracking-wider py-2 px-3 ${activeCls} hover:text-slate-200">${escapeHTML(c.label)}<span class="ml-1 text-slate-500">${arrow}</span></th>`;
+        }).join('');
+
+        const body = sorted.map(r =>
+          '<tr class="hover:bg-slate-800/50 transition">' +
+          columns.map(c => {
+            const html = (r[c.key + 'HTML'] != null) ? r[c.key + 'HTML'] : escapeHTML(r[c.key]);
+            const align = c.align === 'right' ? 'text-right font-medium' : 'text-slate-300';
+            return `<td class="py-2 px-3 text-sm ${align}">${html}</td>`;
+          }).join('') +
+          '</tr>'
+        ).join('');
+
+        container.innerHTML = '<table class="w-full divide-y divide-slate-800"><thead><tr>' + head + '</tr></thead><tbody class="divide-y divide-slate-800">' + body + '</tbody></table>';
+
+        container.querySelectorAll('th[data-sort-key]').forEach(th => {
+          th.addEventListener('click', () => {
+            const k = th.dataset.sortKey;
+            if (k === sortKey) sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+            else { sortKey = k; sortDir = 'asc'; }
+            render();
+          });
+        });
+      }
+
+      render();
+    }
+
+    function renderBalance(data, c) {
+      const t = data.totals || {};
+      const cell = (label, val, cls) => `
+        <div>
+          <p class="text-xs text-slate-400 uppercase tracking-wider mb-1">${label}</p>
+          <p class="text-3xl font-semibold ${cls}">${fmtMoney(val)}</p>
+        </div>`;
+      c.innerHTML = cell('Assets', t.assets, 'text-slate-100') +
+                    cell('Liabilities', t.liabilities, 'text-rose-400') +
+                    cell('Net worth', t.net, 'text-emerald-300');
+    }
+
+    function renderCashflow(data, c) {
+      const summary = Array.isArray(data.summary) ? (data.summary[0] || {}) : (data.summary || {});
+      const inner = summary.summary || summary;
+      const income = inner.sumIncome;
+      const expense = inner.sumExpense;
+      const savings = inner.savings;
+      const rate = inner.savingsRate;
+      if (income == null && expense == null) {
+        c.innerHTML = '<pre class="text-xs text-slate-400 overflow-auto">' + escapeHTML(JSON.stringify(data, null, 2)) + '</pre>';
+        return;
+      }
+      const row = (k, v, cls = '') => `
+        <div class="flex items-center justify-between py-2 border-b border-slate-800 last:border-0">
+          <span class="text-sm text-slate-400">${k}</span>
+          <span class="font-medium ${cls}">${v}</span>
+        </div>`;
+      let html = '';
+      html += row('Income', fmtMoney(income), 'text-emerald-400');
+      html += row('Expenses', fmtMoney(expense), 'text-rose-400');
+      html += row('Savings', fmtMoney(savings), amountClass(savings));
+      if (rate != null) html += row('Savings rate', (Number(rate) * 100).toFixed(1) + '%');
+      c.innerHTML = html;
+    }
+
+    function renderAccounts(data, c) {
+      const accounts = data.accounts || [];
+      if (!accounts.length) { c.innerHTML = '<p class="text-sm text-slate-400">No accounts.</p>'; return; }
+      const rows = accounts.map(a => {
+        const type = (a.type || {}).display || (a.type || {}).name || '';
+        const inst = (a.institution || {}).name || ((a.credential || {}).institution || {}).name || '';
+        const bal = a.displayBalance != null ? a.displayBalance : a.currentBalance;
+        const isAsset = a.isAsset != null ? a.isAsset : Number(bal) >= 0;
+        const cls = isAsset ? 'text-emerald-400' : 'text-rose-400';
+        const limit = (a.limit != null && Number.isFinite(Number(a.limit))) ? Number(a.limit) : null;
+
+        let balanceHTML;
+        if (limit != null && limit > 0) {
+          const util = (Number(bal) / limit) * 100;
+          // Color the utilization: >80% rose, >50% amber, else muted.
+          const utilCls = util > 80 ? 'text-rose-400' : (util > 50 ? 'text-amber-400' : 'text-slate-500');
+          balanceHTML = `
+            <div class="flex flex-col items-end leading-tight">
+              <span class="${cls}">${fmtMoney(bal)} <span class="text-slate-500">/ ${fmtMoney(limit)}</span></span>
+              <span class="text-xs ${utilCls}">${util.toFixed(1)}% used</span>
+            </div>`;
+        } else {
+          balanceHTML = `<span class="${cls}">${fmtMoney(bal)}</span>`;
+        }
+
+        return {
+          name: a.displayName || a.name || '',
+          type,
+          institution: inst,
+          balance: Number(bal) || 0,
+          balanceHTML,
+        };
+      });
+      sortableTable(c, [
+        { key: 'name', label: 'Name' },
+        { key: 'type', label: 'Type' },
+        { key: 'institution', label: 'Institution' },
+        { key: 'balance', label: 'Balance', align: 'right' },
+      ], rows, { key: 'type', dir: 'asc' });
+    }
+
+    function renderTransactions(data, c) {
+      const results = (data.allTransactions || {}).results || data.results || [];
+      if (!results.length) { c.innerHTML = '<p class="text-sm text-slate-400">No transactions.</p>'; return; }
+      const rows = results.map(t => {
+        const amt = t.amount;
+        return {
+          date: t.date || '',
+          merchant: (t.merchant || {}).name || '',
+          category: (t.category || {}).name || '',
+          account: (t.account || {}).displayName || (t.account || {}).name || '',
+          amount: Number(amt) || 0,
+          amountHTML: `<span class="${amountClass(amt)}">${fmtMoney(amt)}</span>`,
+        };
+      });
+      sortableTable(c, [
+        { key: 'date', label: 'Date' },
+        { key: 'merchant', label: 'Merchant' },
+        { key: 'category', label: 'Category' },
+        { key: 'account', label: 'Account' },
+        { key: 'amount', label: 'Amount', align: 'right' },
+      ], rows, { key: 'date', dir: 'desc' });
+    }
+
+    function renderBudgets(data, c) {
+      const monthlyRows = (data.budgetData && data.budgetData.monthlyAmountsByCategory) || [];
+      if (!monthlyRows.length) { c.innerHTML = '<p class="text-sm text-slate-400">No budget data.</p>'; return; }
+
+      // Category names live on data.categoryGroups[].categories[], not on the rows themselves.
+      const nameById = {};
+      for (const g of (data.categoryGroups || [])) {
+        for (const cc of (g.categories || [])) nameById[cc.id] = cc.name;
+      }
+
+      // monthlyAmounts includes future months with zeros. Pick the entry for the current month.
+      const now = new Date();
+      const currentPrefix = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
+      const pickMonth = (amounts) => amounts.find(a => (a.month || '').startsWith(currentPrefix)) || amounts[0] || {};
+
+      const enriched = monthlyRows.map(r => {
+        const catId = (r.category || {}).id;
+        const name = nameById[catId] || (r.category || {}).name || r.name || '(uncategorized)';
+        const month = pickMonth(r.monthlyAmounts || []);
+        const planned = month.plannedCashFlowAmount || 0;
+        const actual = month.actualAmount || 0;
+        const remaining = month.remainingAmount != null ? month.remainingAmount : (planned - actual);
+        return { name, planned, actual, remaining };
+      }).filter(r => r.planned !== 0 || r.actual !== 0);
+
+      if (!enriched.length) { c.innerHTML = '<p class="text-sm text-slate-400">No budget data for the current month.</p>'; return; }
+
+      const rows = enriched.map(r => {
+        const cls = r.remaining < 0 ? 'text-rose-400' : (r.remaining > 0 ? 'text-emerald-400' : 'text-slate-400');
+        return {
+          ...r,
+          plannedHTML: fmtMoney(r.planned),
+          actualHTML: fmtMoney(r.actual),
+          remainingHTML: `<span class="${cls}">${fmtMoney(r.remaining)}</span>`,
+        };
+      });
+
+      sortableTable(c, [
+        { key: 'name', label: 'Category' },
+        { key: 'planned', label: 'Budgeted', align: 'right' },
+        { key: 'actual', label: 'Actual', align: 'right' },
+        { key: 'remaining', label: 'Remaining', align: 'right' },
+      ], rows, { key: 'remaining', dir: 'asc' });
+    }
+
+    function renderRecurring(data, c) {
+      const items = data.recurringTransactionItems || data.recurringStreams || [];
+      if (!items.length) { c.innerHTML = '<p class="text-sm text-slate-400">No recurring transactions.</p>'; return; }
+      const rows = items.map(r => {
+        const stream = r.stream || r;
+        const amount = r.amount != null ? r.amount : stream.amount;
+        return {
+          date: r.date || r.nextDate || stream.nextForecastedTransactionDate || '',
+          merchant: (stream.merchant || {}).name || stream.name || '',
+          account: (r.account || stream.account || {}).displayName || '',
+          amount: Number(amount) || 0,
+          amountHTML: `<span class="${amountClass(amount)}">${fmtMoney(amount)}</span>`,
+        };
+      });
+      sortableTable(c, [
+        { key: 'date', label: 'Next date' },
+        { key: 'merchant', label: 'Merchant' },
+        { key: 'account', label: 'Account' },
+        { key: 'amount', label: 'Amount', align: 'right' },
+      ], rows, { key: 'date', dir: 'asc' });
+    }
+
+    function renderApi(data, c) {
+      const accounts = data.accounts || [];
+      const firstId = accounts.length ? String(accounts[0].id) : '';
+      // Prefer a brokerage account for /api/holdings; fall back to any asset, then any account.
+      const brokerage = accounts.find(a => ((a.type || {}).name || '') === 'brokerage')
+                     || accounts.find(a => a.isAsset)
+                     || accounts[0];
+      const brokerageId = brokerage ? String(brokerage.id) : '';
+
+      const pad = (n) => String(n).padStart(2, '0');
+      const today = new Date();
+      const todayStr = today.getFullYear() + '-' + pad(today.getMonth() + 1) + '-' + pad(today.getDate());
+      const monthStart = today.getFullYear() + '-' + pad(today.getMonth() + 1) + '-01';
+
+      const accountLabel = (id) => {
+        const a = accounts.find(x => String(x.id) === id);
+        return a ? (a.displayName || a.name || id) : id;
+      };
+
+      const endpoints = [
+        { path: 'api/accounts', note: 'All accounts with balances' },
+        { path: 'api/balance', note: 'Net-worth totals + accounts' },
+        { path: `api/account-balance?account_id=${firstId}`, note: `Single account · ${accountLabel(firstId)}` },
+        { path: `api/transactions?start_date=${monthStart}&end_date=${todayStr}&limit=25`, note: 'Last 25 transactions, current month' },
+        { path: `api/budgets?start_date=${monthStart}&end_date=${todayStr}`, note: 'Budgets vs actuals, current month' },
+        { path: `api/cashflow?start_date=${monthStart}&end_date=${todayStr}`, note: 'Cashflow summary, current month' },
+        { path: `api/holdings?account_id=${brokerageId}`, note: `Holdings · ${accountLabel(brokerageId)}` },
+        { path: `api/recurring?start_date=${monthStart}&end_date=${todayStr}`, note: 'Recurring transactions, current month' },
+        { path: 'api/categories', note: 'Transaction categories' },
+        { path: 'api/subscription', note: 'Monarch subscription details' },
+        { path: 'api/docs', note: 'Swagger UI for the API' },
+      ];
+
+      c.innerHTML = '<ul class="divide-y divide-slate-800">' + endpoints.map(e => `
+        <li class="py-2.5 flex items-center gap-3 flex-wrap">
+          <span class="text-[10px] font-semibold tracking-widest px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/30">GET</span>
+          <a href="${e.path}" target="_blank" rel="noopener" class="text-sky-400 hover:text-sky-300 hover:underline font-mono text-sm break-all">${escapeHTML(e.path)}</a>
+          <span class="text-xs text-slate-500">${escapeHTML(e.note)}</span>
+        </li>`).join('') + '</ul>';
+    }
+
+    const CARDS = [
+      { id: 'card-balance', url: 'api/balance', render: renderBalance },
+      { id: 'card-accounts', url: 'api/accounts', render: renderAccounts },
+      { id: 'card-cashflow', url: 'api/cashflow', render: renderCashflow },
+      { id: 'card-budgets', url: 'api/budgets', render: renderBudgets },
+      { id: 'card-transactions', url: 'api/transactions?limit=25', render: renderTransactions },
+      { id: 'card-recurring', url: 'api/recurring', render: renderRecurring },
+      { id: 'card-api', url: 'api/accounts', render: renderApi },
+    ];
+
+    async function loadCard(card) {
+      const body = document.querySelector('#' + card.id + ' [data-body]');
+      body.innerHTML = skeleton(3);
+      try {
+        const data = await fetchJSON(card.url);
+        body.innerHTML = '';
+        card.render(data, body);
+      } catch (e) {
+        body.innerHTML = errorBlock(e.message);
+      }
+    }
+
+    async function loadAll() {
+      document.getElementById('refresh').disabled = true;
+      await Promise.all(CARDS.map(loadCard));
+      document.getElementById('refreshed').textContent = new Date().toLocaleTimeString();
+      document.getElementById('refresh').disabled = false;
+    }
+
+    // --- Auth gate -----------------------------------------------------
+
+    const authBanner = document.getElementById('auth-banner');
+    const authBody = document.getElementById('auth-banner-inner');
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+    function showAuthBanner(html) {
+      authBody.innerHTML = html;
+      authBanner.classList.remove('hidden');
+    }
+    function hideAuthBanner() { authBanner.classList.add('hidden'); }
+
+    function renderPendingState() {
+      showAuthBanner(`
+        <div class="flex items-center gap-3">
+          <div class="h-2 w-2 rounded-full bg-amber-400 animate-pulse"></div>
+          <p class="text-sm text-slate-300">Connecting to Monarch…</p>
+        </div>`);
+    }
+
+    function renderErrorState(message) {
+      authBanner.firstElementChild.classList.remove('border-amber-500/30');
+      authBanner.firstElementChild.classList.add('border-rose-500/40');
+      showAuthBanner(`
+        <h2 class="text-base font-semibold text-rose-400 mb-1">Login failed</h2>
+        <p class="text-sm text-slate-300">${escapeHTML(message || 'Unknown error')}</p>
+        <p class="text-xs text-slate-500 mt-3">Fix the issue and restart the server.</p>`);
+    }
+
+    let mfaSubmitResolver = null;
+
+    function renderMfaForm(message) {
+      authBanner.firstElementChild.classList.remove('border-rose-500/40');
+      authBanner.firstElementChild.classList.add('border-amber-500/30');
+      showAuthBanner(`
+        <h2 class="text-base font-semibold text-slate-100 mb-1">MFA code required</h2>
+        <p class="text-sm text-slate-400 mb-4">${escapeHTML(message || 'Enter the 6-digit code from your authenticator app.')}</p>
+        <form id="mfa-form" class="flex items-center gap-3 flex-wrap">
+          <input id="mfa-code" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" autofocus maxlength="8"
+            class="px-3 py-2 rounded-md bg-slate-950 border border-slate-700 text-slate-100 font-mono tracking-widest w-48 focus:outline-none focus:border-emerald-500" />
+          <button type="submit" id="mfa-submit"
+            class="px-4 py-2 rounded-md bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 disabled:cursor-not-allowed text-slate-950 font-medium transition">
+            Submit
+          </button>
+        </form>
+        <p id="mfa-error" class="text-rose-400 text-sm mt-3 hidden"></p>`);
+      document.getElementById('mfa-code').focus();
+      document.getElementById('mfa-form').addEventListener('submit', onMfaSubmit);
+    }
+
+    async function onMfaSubmit(e) {
+      e.preventDefault();
+      const input = document.getElementById('mfa-code');
+      const submitBtn = document.getElementById('mfa-submit');
+      const errBox = document.getElementById('mfa-error');
+      const code = input.value.trim();
+      if (!code) return;
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Submitting…';
+      errBox.classList.add('hidden');
+      try {
+        const r = await fetch('api/auth/mfa', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code }),
+        });
+        const data = await r.json().catch(() => ({}));
+        if (r.ok && data.status === 'ready') {
+          mfaSubmitResolver && mfaSubmitResolver(true);
+          mfaSubmitResolver = null;
+        } else {
+          errBox.textContent = data.message || data.detail || 'MFA failed';
+          errBox.classList.remove('hidden');
+          input.value = '';
+          input.focus();
+          submitBtn.disabled = false;
+          submitBtn.textContent = 'Submit';
+        }
+      } catch (e) {
+        errBox.textContent = String(e);
+        errBox.classList.remove('hidden');
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Submit';
+      }
+    }
+
+    function waitForMfaSubmit() {
+      return new Promise(resolve => { mfaSubmitResolver = resolve; });
+    }
+
+    async function ensureReady() {
+      // Poll until the server reports ready. Show the appropriate banner state.
+      let lastStatus = null;
+      while (true) {
+        let s;
+        try { s = await fetchJSON('api/auth/status'); }
+        catch (e) { renderErrorState('Cannot reach server: ' + e.message); await sleep(2000); continue; }
+
+        if (s.status === 'ready') { hideAuthBanner(); return; }
+        if (s.status === 'error') { renderErrorState(s.message); throw new Error(s.message); }
+
+        if (s.status === 'awaiting_mfa') {
+          if (lastStatus !== 'awaiting_mfa') renderMfaForm(s.message);
+          lastStatus = 'awaiting_mfa';
+          await waitForMfaSubmit();
+          // Loop and re-check status to confirm the server moved to ready.
+          continue;
+        }
+
+        // pending
+        if (lastStatus !== 'pending') renderPendingState();
+        lastStatus = 'pending';
+        await sleep(1500);
+      }
+    }
+
+    function setAllCardsWaiting() {
+      for (const card of CARDS) {
+        const body = document.querySelector('#' + card.id + ' [data-body]');
+        if (body) body.innerHTML = skeleton(3);
+      }
+    }
+
+    async function init() {
+      const refreshBtn = document.getElementById('refresh');
+      refreshBtn.disabled = true;
+      setAllCardsWaiting();
+      try {
+        await ensureReady();
+        await loadAll();
+      } catch (e) {
+        // ensureReady already rendered the error banner; leave cards in skeleton state.
+      } finally {
+        refreshBtn.disabled = false;
+      }
+    }
+
+    document.getElementById('refresh').addEventListener('click', loadAll);
+    init();
+  </script>
+</body>
+</html>

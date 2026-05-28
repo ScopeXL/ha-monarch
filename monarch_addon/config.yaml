@@ -1,0 +1,22 @@
+name: Monarch Money
+version: "1.0.0"
+slug: monarch_money
+description: Read-only Monarch Money dashboard and JSON API
+url: https://github.com/ScopeXL/monarch
+arch:
+  - amd64
+init: false
+ingress: true
+ingress_port: 8000
+panel_icon: mdi:finance
+panel_title: Monarch
+ports:
+  "8000/tcp": 8000
+options:
+  email: ""
+  password: ""
+  mfa_secret: ""
+schema:
+  email: str
+  password: password
+  mfa_secret: str?

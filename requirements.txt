@@ -1,0 +1,5 @@
+monarchmoneycommunity>=1.3.2
+python-dotenv>=1.0.0
+rich>=13.0.0
+fastapi>=0.110
+uvicorn[standard]>=0.27
