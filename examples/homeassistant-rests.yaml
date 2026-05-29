@@ -1,0 +1,289 @@
+# Example Home Assistant REST sensors for the Monarch Money add-on.
+#
+# Drop these into your HA config. If you split config with
+#   rest: !include rests.yaml
+# then paste the list items below into rests.yaml (it's a list of resources).
+# Otherwise nest them under a top-level `rest:` key in configuration.yaml.
+#
+# Replace <HA_HOST_IP> with your Home Assistant host's LAN IP. REST sensors run
+# in HA Core, which can't reach the add-on at localhost; it reaches the add-on
+# via the host IP + the published port 8000.
+#
+# Endpoints return HTTP 503 until the one-time MFA login is done in the add-on
+# dashboard. Until then these sensors read "unknown" — they recover on their own
+# once auth is ready. Keep scan_interval generous; every poll hits Monarch's API.
+
+# --- Net worth + per-account balances (ONE fetch feeds all of these) --------
+- resource: "http://localhost:8000/api/balance"
+  scan_interval: 3600
+  sensor:
+    - name: "Monarch Net Worth"
+      unique_id: monarch_net_worth
+      value_template: "{{ value_json.totals.net | round(2) }}"
+      unit_of_measurement: USD
+      device_class: monetary
+      state_class: total
+
+    - name: "Monarch Assets"
+      unique_id: monarch_assets
+      value_template: "{{ value_json.totals.assets | round(2) }}"
+      unit_of_measurement: USD
+      device_class: monetary
+      state_class: total
+
+    - name: "Monarch Liabilities"
+      unique_id: monarch_liabilities
+      value_template: "{{ value_json.totals.liabilities | round(2) }}"
+      unit_of_measurement: USD
+      device_class: monetary
+      state_class: total
+
+    # --- Per-account balances -------------------------------------------------
+    # Filter the accounts array by displayName (run /api/accounts once to see the
+    # exact names). Duplicate this block per account you care about. displayBalance
+    # falls back to currentBalance when null.
+    - name: "Monarch Joint Savings Account Balance"
+      unique_id: monarch_joint_savings_balance
+      value_template: >
+        {% set a = value_json.accounts
+            | selectattr('displayName', 'eq', 'Joint Savings (...0558)') | first | default({}) %}
+        {{ (a.displayBalance if a.displayBalance is not none else a.currentBalance)
+            | default(0) | round(2) }}
+      unit_of_measurement: USD
+      device_class: monetary
+      state_class: total
+      icon: mdi:cash
+
+    - name: "Monarch Joint Checking Account Balance"
+      unique_id: monarch_joint_checking_balance
+      value_template: >
+        {% set a = value_json.accounts
+            | selectattr('displayName', 'eq', 'Joint Checking (...0665)') | first | default({}) %}
+        {{ (a.displayBalance if a.displayBalance is not none else a.currentBalance)
+            | default(0) | round(2) }}
+      unit_of_measurement: USD
+      device_class: monetary
+      state_class: total
+      icon: mdi:cash
+
+    - name: "Monarch Amazon Credit Card Balance"
+      unique_id: monarch_amazon_credit_card_balance
+      value_template: >
+        {% set a = value_json.accounts
+            | selectattr('displayName', 'eq', 'CREDIT CARD (...4431)') | first | default({}) %}
+        {{ (a.displayBalance if a.displayBalance is not none else a.currentBalance)
+            | default(0) | round(2) }}
+      unit_of_measurement: USD
+      device_class: monetary
+      state_class: total
+      icon: mdi:credit-card
+
+    - name: "Monarch Chase Credit Card Balance"
+      unique_id: monarch_chase_credit_card_balance
+      value_template: >
+        {% set a = value_json.accounts
+            | selectattr('displayName', 'eq', 'CREDIT CARD (...0358)') | first | default({}) %}
+        {{ (a.displayBalance if a.displayBalance is not none else a.currentBalance)
+            | default(0) | round(2) }}
+      unit_of_measurement: USD
+      device_class: monetary
+      state_class: total
+      icon: mdi:credit-card
+
+    - name: "Monarch Amazon Credit Card Limit"
+      unique_id: monarch_amazon_credit_card_limit
+      value_template: >
+        {% set a = value_json.accounts
+            | selectattr('displayName', 'eq', 'CREDIT CARD (...4431)') | first | default({}) %}
+        {{ a.limit | round(2) }}
+      unit_of_measurement: USD
+      device_class: monetary
+      state_class: total
+      icon: mdi:credit-card-lock
+
+    - name: "Monarch Chase Credit Card Limit"
+      unique_id: monarch_chase_credit_card_limit
+      value_template: >
+        {% set a = value_json.accounts
+            | selectattr('displayName', 'eq', 'CREDIT CARD (...0358)') | first | default({}) %}
+        {{ a.limit | round(2) }}
+      unit_of_measurement: USD
+      device_class: monetary
+      state_class: total
+      icon: mdi:credit-card-lock
+
+# --- Cashflow (income / expenses / savings) ---------------------------------
+- resource: "http://localhost:8000/api/cashflow"
+  scan_interval: 3600
+  sensor:
+    - name: "Monarch Income (Month)"
+      unique_id: monarch_income
+      value_template: "{{ value_json.summary[0].summary.sumIncome | round(2) }}"
+      unit_of_measurement: USD
+      device_class: monetary
+      state_class: total
+
+    - name: "Monarch Expenses (Month)"
+      unique_id: monarch_expenses
+      # sumExpense is negative in Monarch; abs() makes it a positive spend figure.
+      value_template: "{{ (value_json.summary[0].summary.sumExpense | float | abs) | round(2) }}"
+      unit_of_measurement: USD
+      device_class: monetary
+      state_class: total
+
+    - name: "Monarch Savings (Month)"
+      unique_id: monarch_savings
+      value_template: "{{ value_json.summary[0].summary.savings | round(2) }}"
+      unit_of_measurement: USD
+      device_class: monetary
+      state_class: total
+
+    - name: "Monarch Savings Rate"
+      unique_id: monarch_savings_rate
+      # savingsRate is a 0..1 fraction; *100 for a percentage.
+      value_template: "{{ (value_json.summary[0].summary.savingsRate | float * 100) | round(1) }}"
+      unit_of_measurement: "%"
+      state_class: measurement
+
+# --- Daily spending, last 7 days --------------------------------------------
+# ONE fetch of the last 7 days of transactions (resource_template injects the
+# date range each poll), then 7 sensors each sum that day's outflows. "Spend" =
+# sum of negative amounts (expenses are negative in Monarch), flipped positive.
+# Recomputed from source every poll, so late-posting/recategorized transactions
+# stay accurate across all 7 days. limit=500 is plenty for a week.
+- resource_template: >-
+    http://localhost:8000/api/transactions?limit=500&start_date={{ (now() - timedelta(days=6)).strftime('%Y-%m-%d') }}&end_date={{ now().strftime('%Y-%m-%d') }}
+  scan_interval: 3600
+  sensor:
+    - name: "Monarch Spend Today"
+      unique_id: monarch_spend_today
+      unit_of_measurement: USD
+      device_class: monetary
+      state_class: total
+      icon: mdi:cash-minus
+      value_template: >-
+        {% set day = now().strftime('%Y-%m-%d') %}
+        {% set txns = value_json.allTransactions.results | default([]) %}
+        {{ ((txns | selectattr('amount','lt',0) | selectattr('date','eq',day)
+            | sum(attribute='amount')) * -1) | round(2) }}
+
+    - name: "Monarch Spend 1 Day Ago"
+      unique_id: monarch_spend_1_day_ago
+      unit_of_measurement: USD
+      device_class: monetary
+      state_class: total
+      icon: mdi:cash-minus
+      value_template: >-
+        {% set day = (now() - timedelta(days=1)).strftime('%Y-%m-%d') %}
+        {% set txns = value_json.allTransactions.results | default([]) %}
+        {{ ((txns | selectattr('amount','lt',0) | selectattr('date','eq',day)
+            | sum(attribute='amount')) * -1) | round(2) }}
+
+    - name: "Monarch Spend 2 Days Ago"
+      unique_id: monarch_spend_2_days_ago
+      unit_of_measurement: USD
+      device_class: monetary
+      state_class: total
+      icon: mdi:cash-minus
+      value_template: >-
+        {% set day = (now() - timedelta(days=2)).strftime('%Y-%m-%d') %}
+        {% set txns = value_json.allTransactions.results | default([]) %}
+        {{ ((txns | selectattr('amount','lt',0) | selectattr('date','eq',day)
+            | sum(attribute='amount')) * -1) | round(2) }}
+
+    - name: "Monarch Spend 3 Days Ago"
+      unique_id: monarch_spend_3_days_ago
+      unit_of_measurement: USD
+      device_class: monetary
+      state_class: total
+      icon: mdi:cash-minus
+      value_template: >-
+        {% set day = (now() - timedelta(days=3)).strftime('%Y-%m-%d') %}
+        {% set txns = value_json.allTransactions.results | default([]) %}
+        {{ ((txns | selectattr('amount','lt',0) | selectattr('date','eq',day)
+            | sum(attribute='amount')) * -1) | round(2) }}
+
+    - name: "Monarch Spend 4 Days Ago"
+      unique_id: monarch_spend_4_days_ago
+      unit_of_measurement: USD
+      device_class: monetary
+      state_class: total
+      icon: mdi:cash-minus
+      value_template: >-
+        {% set day = (now() - timedelta(days=4)).strftime('%Y-%m-%d') %}
+        {% set txns = value_json.allTransactions.results | default([]) %}
+        {{ ((txns | selectattr('amount','lt',0) | selectattr('date','eq',day)
+            | sum(attribute='amount')) * -1) | round(2) }}
+
+    - name: "Monarch Spend 5 Days Ago"
+      unique_id: monarch_spend_5_days_ago
+      unit_of_measurement: USD
+      device_class: monetary
+      state_class: total
+      icon: mdi:cash-minus
+      value_template: >-
+        {% set day = (now() - timedelta(days=5)).strftime('%Y-%m-%d') %}
+        {% set txns = value_json.allTransactions.results | default([]) %}
+        {{ ((txns | selectattr('amount','lt',0) | selectattr('date','eq',day)
+            | sum(attribute='amount')) * -1) | round(2) }}
+
+    - name: "Monarch Spend 6 Days Ago"
+      unique_id: monarch_spend_6_days_ago
+      unit_of_measurement: USD
+      device_class: monetary
+      state_class: total
+      icon: mdi:cash-minus
+      value_template: >-
+        {% set day = (now() - timedelta(days=6)).strftime('%Y-%m-%d') %}
+        {% set txns = value_json.allTransactions.results | default([]) %}
+        {{ ((txns | selectattr('amount','lt',0) | selectattr('date','eq',day)
+            | sum(attribute='amount')) * -1) | round(2) }}
+
+# --- Monthly spending, current month ----------------------------------------
+# ONE fetch of every transaction from the 1st of the current month through today
+# (resource_template injects the date range each poll), summed into a single
+# month-to-date spend figure. Same "spend" definition as the daily sensors: sum
+# of negative amounts (expenses are negative in Monarch), flipped positive.
+# Recomputed from source every poll, so late-posting/recategorized transactions
+# stay accurate. limit=2000 covers a busy month with room to spare.
+- resource_template: >-
+    http://localhost:8000/api/transactions?limit=2000&start_date={{ now().strftime('%Y-%m-01') }}&end_date={{ now().strftime('%Y-%m-%d') }}
+  scan_interval: 3600
+  sensor:
+    - name: "Monarch Spend This Month"
+      unique_id: monarch_spend_this_month
+      unit_of_measurement: USD
+      device_class: monetary
+      state_class: total
+      icon: mdi:cash-minus
+      value_template: >-
+        {% set txns = value_json.allTransactions.results | default([]) %}
+        {{ ((txns | selectattr('amount','lt',0)
+            | sum(attribute='amount')) * -1) | round(2) }}
+
+# --- Auth health ------------------------------------------------------------
+# /api/auth/status just reports the add-on's in-memory login state
+# (pending | awaiting_mfa | error | ready) and does NOT call Monarch, so it's
+# cheap to poll often. "on" = session is ready; "off" = needs attention (e.g.
+# awaiting_mfa after a restart, or an error). If the add-on is down/unreachable
+# the request fails and the sensor goes "unavailable". The status/message are
+# exposed as attributes so you can see *why* it isn't ready.
+- resource: "http://localhost:8000/api/auth/status"
+  scan_interval: 60
+  # In the `rest:` integration, json_attributes is only valid on a `sensor`
+  # (not on binary_sensor, and not at the resource level). So the raw status +
+  # message live on the status sensor, and the binary_sensor below derives a
+  # simple ready/not-ready from the same fetch.
+  sensor:
+    - name: "Monarch Auth Status"
+      unique_id: monarch_auth_status
+      value_template: "{{ value_json.status }}"   # pending | awaiting_mfa | error | ready
+      json_attributes:
+        - status
+        - message
+      icon: mdi:shield-account
+  binary_sensor:
+    - name: "Monarch API Ready"
+      unique_id: monarch_api_ready
+      device_class: connectivity
+      value_template: "{{ value_json.status == 'ready' }}"
