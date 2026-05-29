@@ -5,16 +5,19 @@
 # then paste the list items below into rests.yaml (it's a list of resources).
 # Otherwise nest them under a top-level `rest:` key in configuration.yaml.
 #
-# Replace <HA_HOST_IP> with your Home Assistant host's LAN IP. REST sensors run
-# in HA Core, which can't reach the add-on at localhost; it reaches the add-on
-# via the host IP + the published port 8000.
+# Private values (the add-on's host/port and your account displayNames) are kept
+# out of this file via `!secret` — they live in secrets.yaml. Copy the keys from
+# examples/secrets.yaml into your HA secrets.yaml and fill in your real values.
+# (HA's `!secret` can only replace a whole value and can't be read inside a
+# Jinja template, so each full resource URL and per-account template is stored
+# as its own secret rather than just the host or the account name.)
 #
 # Endpoints return HTTP 503 until the one-time MFA login is done in the add-on
 # dashboard. Until then these sensors read "unknown" — they recover on their own
 # once auth is ready. Keep scan_interval generous; every poll hits Monarch's API.
 
 # --- Net worth + per-account balances (ONE fetch feeds all of these) --------
-- resource: "http://localhost:8000/api/balance"
+- resource: !secret monarch_balance_resource    # GET /api/balance
   scan_interval: 3600
   sensor:
     - name: "Monarch Net Worth"
@@ -39,16 +42,13 @@
       state_class: total
 
     # --- Per-account balances -------------------------------------------------
-    # Filter the accounts array by displayName (run /api/accounts once to see the
-    # exact names). Duplicate this block per account you care about. displayBalance
-    # falls back to currentBalance when null.
+    # Each value_template filters the accounts array by displayName; those
+    # templates (with the account names) live in secrets.yaml. Edit the names
+    # there (run /api/accounts once to see the exact names), and add a sensor +
+    # matching secret per account you care about.
     - name: "Monarch Joint Savings Account Balance"
       unique_id: monarch_joint_savings_balance
-      value_template: >
-        {% set a = value_json.accounts
-            | selectattr('displayName', 'eq', 'Joint Savings (...0558)') | first | default({}) %}
-        {{ (a.displayBalance if a.displayBalance is not none else a.currentBalance)
-            | default(0) | round(2) }}
+      value_template: !secret monarch_joint_savings_balance_template
       unit_of_measurement: USD
       device_class: monetary
       state_class: total
@@ -56,11 +56,7 @@
 
     - name: "Monarch Joint Checking Account Balance"
       unique_id: monarch_joint_checking_balance
-      value_template: >
-        {% set a = value_json.accounts
-            | selectattr('displayName', 'eq', 'Joint Checking (...0665)') | first | default({}) %}
-        {{ (a.displayBalance if a.displayBalance is not none else a.currentBalance)
-            | default(0) | round(2) }}
+      value_template: !secret monarch_joint_checking_balance_template
       unit_of_measurement: USD
       device_class: monetary
       state_class: total
@@ -68,11 +64,7 @@
 
     - name: "Monarch Amazon Credit Card Balance"
       unique_id: monarch_amazon_credit_card_balance
-      value_template: >
-        {% set a = value_json.accounts
-            | selectattr('displayName', 'eq', 'CREDIT CARD (...4431)') | first | default({}) %}
-        {{ (a.displayBalance if a.displayBalance is not none else a.currentBalance)
-            | default(0) | round(2) }}
+      value_template: !secret monarch_amazon_cc_balance_template
       unit_of_measurement: USD
       device_class: monetary
       state_class: total
@@ -80,11 +72,7 @@
 
     - name: "Monarch Chase Credit Card Balance"
       unique_id: monarch_chase_credit_card_balance
-      value_template: >
-        {% set a = value_json.accounts
-            | selectattr('displayName', 'eq', 'CREDIT CARD (...0358)') | first | default({}) %}
-        {{ (a.displayBalance if a.displayBalance is not none else a.currentBalance)
-            | default(0) | round(2) }}
+      value_template: !secret monarch_chase_cc_balance_template
       unit_of_measurement: USD
       device_class: monetary
       state_class: total
@@ -92,10 +80,7 @@
 
     - name: "Monarch Amazon Credit Card Limit"
       unique_id: monarch_amazon_credit_card_limit
-      value_template: >
-        {% set a = value_json.accounts
-            | selectattr('displayName', 'eq', 'CREDIT CARD (...4431)') | first | default({}) %}
-        {{ a.limit | round(2) }}
+      value_template: !secret monarch_amazon_cc_limit_template
       unit_of_measurement: USD
       device_class: monetary
       state_class: total
@@ -103,17 +88,14 @@
 
     - name: "Monarch Chase Credit Card Limit"
       unique_id: monarch_chase_credit_card_limit
-      value_template: >
-        {% set a = value_json.accounts
-            | selectattr('displayName', 'eq', 'CREDIT CARD (...0358)') | first | default({}) %}
-        {{ a.limit | round(2) }}
+      value_template: !secret monarch_chase_cc_limit_template
       unit_of_measurement: USD
       device_class: monetary
       state_class: total
       icon: mdi:credit-card-lock
 
 # --- Cashflow (income / expenses / savings) ---------------------------------
-- resource: "http://localhost:8000/api/cashflow"
+- resource: !secret monarch_cashflow_resource    # GET /api/cashflow
   scan_interval: 3600
   sensor:
     - name: "Monarch Income (Month)"
@@ -151,8 +133,7 @@
 # sum of negative amounts (expenses are negative in Monarch), flipped positive.
 # Recomputed from source every poll, so late-posting/recategorized transactions
 # stay accurate across all 7 days. limit=500 is plenty for a week.
-- resource_template: >-
-    http://localhost:8000/api/transactions?limit=500&start_date={{ (now() - timedelta(days=6)).strftime('%Y-%m-%d') }}&end_date={{ now().strftime('%Y-%m-%d') }}
+- resource_template: !secret monarch_transactions_resource    # GET /api/transactions (rolling 7d)
   scan_interval: 3600
   sensor:
     - name: "Monarch Spend Today"
@@ -246,7 +227,7 @@
 # awaiting_mfa after a restart, or an error). If the add-on is down/unreachable
 # the request fails and the sensor goes "unavailable". The status/message are
 # exposed as attributes so you can see *why* it isn't ready.
-- resource: "http://localhost:8000/api/auth/status"
+- resource: !secret monarch_auth_resource    # GET /api/auth/status
   scan_interval: 60
   # In the `rest:` integration, json_attributes is only valid on a `sensor`
   # (not on binary_sensor, and not at the resource level). So the raw status +
