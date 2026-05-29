@@ -225,6 +225,30 @@
         {{ ((txns | selectattr('amount','lt',0) | selectattr('date','eq',day)
             | sum(attribute='amount')) * -1) | round(2) }}
 
+# --- Recent transactions (last 10) ------------------------------------------
+# Exposes the 10 most recent transactions as a `results` list attribute for a
+# table card to render (see examples/homeassistant-dashboard-cards.yaml). State
+# is just the count. json_attributes_path drills into allTransactions so the
+# `results` array becomes the attribute.
+#
+# Heads-up: the attribute holds raw transaction objects (each fairly large), so
+# keep this entity out of the recorder/history DB to avoid bloat. Add to your
+# configuration.yaml:
+#   recorder:
+#     exclude:
+#       entities:
+#         - sensor.monarch_recent_transactions
+- resource: "http://localhost:8000/api/transactions?limit=10"
+  scan_interval: 3600
+  sensor:
+    - name: "Monarch Recent Transactions"
+      unique_id: monarch_recent_transactions
+      value_template: "{{ value_json.allTransactions.results | count }}"
+      json_attributes_path: "$.allTransactions"
+      json_attributes:
+        - results
+      icon: mdi:format-list-bulleted
+
 # --- Auth health ------------------------------------------------------------
 # /api/auth/status just reports the add-on's in-memory login state
 # (pending | awaiting_mfa | error | ready) and does NOT call Monarch, so it's

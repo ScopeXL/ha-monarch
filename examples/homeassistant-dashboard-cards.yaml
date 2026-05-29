@@ -1,9 +1,11 @@
-# Example Lovelace dashboard cards for the Monarch Money daily-spend sensors
-# defined in examples/homeassistant-rests.yaml
-# (sensor.monarch_spend_today, sensor.monarch_spend_1_day_ago, ... _6_days_ago).
+# Example Lovelace dashboard cards for the Monarch Money sensors defined in
+# examples/homeassistant-rests.yaml:
+#   - Daily spending: sensor.monarch_spend_today ... _6_days_ago
+#   - Recent transactions: sensor.monarch_recent_transactions (results attribute)
 #
 # Paste a card into a dashboard via the UI (Edit dashboard -> Add card ->
-# Manual / "Show code editor"), or into a YAML-mode dashboard.
+# Manual / "Show code editor"), or into a YAML-mode dashboard. Each numbered
+# OPTION below is a standalone card — copy one, not the whole file.
 
 # ============================================================================
 # OPTION A — ApexCharts card (best looking; requires the ApexCharts Card from
@@ -65,3 +67,47 @@ series:
 #     name: 5 days ago
 #   - entity: sensor.monarch_spend_6_days_ago
 #     name: 6 days ago
+
+# ============================================================================
+# RECENT TRANSACTIONS (last 10) — reads the `results` list attribute on
+# sensor.monarch_recent_transactions. Both options below are commented out;
+# uncomment ONE and paste it as its own card.
+# ============================================================================
+
+# --- OPTION C — flex-table-card (clean, modern table; requires the
+# flex-table-card from HACS: https://github.com/custom-cards/flex-table-card).
+# Each element of the `results` array becomes a row; `x` is that element.
+# ----------------------------------------------------------------------------
+# type: custom:flex-table-card
+# title: Recent Transactions
+# clickable: false
+# entities:
+#   include: sensor.monarch_recent_transactions
+# columns:
+#   - name: Date
+#     data: results
+#     modify: x.date
+#   - name: Merchant
+#     data: results
+#     modify: x.merchant ? x.merchant.name : ''
+#   - name: Category
+#     data: results
+#     modify: x.category ? x.category.name : ''
+#   - name: Amount
+#     data: results
+#     align: right
+#     # Monarch amounts are negative for spend; show a signed dollar figure.
+#     modify: (x.amount < 0 ? '-$' : '+$') + Math.abs(parseFloat(x.amount)).toFixed(2)
+
+# --- OPTION D — Markdown card (no custom cards; works on a stock HA install).
+# Iterates the same attribute into a simple table.
+# ----------------------------------------------------------------------------
+# type: markdown
+# title: Recent Transactions
+# content: |-
+#   {% set rows = state_attr('sensor.monarch_recent_transactions', 'results') or [] -%}
+#   | Date | Merchant | Amount |
+#   |------|----------|-------:|
+#   {% for t in rows -%}
+#   | {{ t.date }} | {{ t.merchant.name if t.merchant else '—' }} | {{ '%+.2f' | format(t.amount | float(0)) }} |
+#   {% endfor -%}

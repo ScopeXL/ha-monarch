@@ -122,7 +122,7 @@ To surface the data as HA entities, use [REST sensors](https://www.home-assistan
 
 Your account `displayName`s are referenced via `!secret`, so they stay out of the YAML you commit. Copy the keys from [`examples/secrets.yaml`](examples/secrets.yaml) into your Home Assistant `secrets.yaml` (in your main config dir) and fill in your real account names. HA's `!secret` can only replace a whole value and can't be read inside a Jinja template, so each full per-account template is stored as its own secret. Keep your real `secrets.yaml` out of source control.
 
-Optionally, [`examples/homeassistant-automation.yaml`](examples/homeassistant-automation.yaml) notifies you when the add-on loses its login and needs a re-auth (otherwise the sensors just go stale silently). For dashboards, [`examples/homeassistant-dashboard-cards.yaml`](examples/homeassistant-dashboard-cards.yaml) charts daily spending (last 7 days) as a bar chart.
+Optionally, [`examples/homeassistant-automation.yaml`](examples/homeassistant-automation.yaml) notifies you when the add-on loses its login and needs a re-auth (otherwise the sensors just go stale silently). For dashboards, [`examples/homeassistant-dashboard-cards.yaml`](examples/homeassistant-dashboard-cards.yaml) charts daily spending (last 7 days) as a bar chart and lists your 10 most recent transactions as a table.
 
 ## Notes
 
