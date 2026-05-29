@@ -239,28 +239,6 @@
         {{ ((txns | selectattr('amount','lt',0) | selectattr('date','eq',day)
             | sum(attribute='amount')) * -1) | round(2) }}
 
-# --- Monthly spending, current month ----------------------------------------
-# ONE fetch of every transaction from the 1st of the current month through today
-# (resource_template injects the date range each poll), summed into a single
-# month-to-date spend figure. Same "spend" definition as the daily sensors: sum
-# of negative amounts (expenses are negative in Monarch), flipped positive.
-# Recomputed from source every poll, so late-posting/recategorized transactions
-# stay accurate. limit=2000 covers a busy month with room to spare.
-- resource_template: >-
-    http://localhost:8000/api/transactions?limit=2000&start_date={{ now().strftime('%Y-%m-01') }}&end_date={{ now().strftime('%Y-%m-%d') }}
-  scan_interval: 3600
-  sensor:
-    - name: "Monarch Spend This Month"
-      unique_id: monarch_spend_this_month
-      unit_of_measurement: USD
-      device_class: monetary
-      state_class: total
-      icon: mdi:cash-minus
-      value_template: >-
-        {% set txns = value_json.allTransactions.results | default([]) %}
-        {{ ((txns | selectattr('amount','lt',0)
-            | sum(attribute='amount')) * -1) | round(2) }}
-
 # --- Auth health ------------------------------------------------------------
 # /api/auth/status just reports the add-on's in-memory login state
 # (pending | awaiting_mfa | error | ready) and does NOT call Monarch, so it's
