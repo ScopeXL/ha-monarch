@@ -19,7 +19,10 @@ graph_span: 7d
 span:
   end: day
 series:
-  - name: Spend
+  # entity is required by apexcharts-card even with a data_generator; it drives
+  # the card's refresh. The generator below pulls all 7 sensors via hass.states.
+  - entity: sensor.monarch_spend_today
+    name: Spend
     type: column
     unit: $
     data_generator: |
