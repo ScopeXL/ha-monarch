@@ -1,0 +1,64 @@
+# Example Lovelace dashboard cards for the Monarch Money daily-spend sensors
+# defined in examples/homeassistant-rests.yaml
+# (sensor.monarch_spend_today, sensor.monarch_spend_1_day_ago, ... _6_days_ago).
+#
+# Paste a card into a dashboard via the UI (Edit dashboard -> Add card ->
+# Manual / "Show code editor"), or into a YAML-mode dashboard.
+
+# ============================================================================
+# OPTION A — ApexCharts card (best looking; requires the ApexCharts Card from
+# HACS: https://github.com/RomRider/apexcharts-card).
+# A data_generator maps the 7 rolling sensors onto real calendar dates, so you
+# get one bar per day with proper date labels.
+# ============================================================================
+type: custom:apexcharts-card
+header:
+  show: true
+  title: Daily Spending (Last 7 Days)
+graph_span: 7d
+span:
+  end: day
+series:
+  - name: Spend
+    type: column
+    unit: $
+    data_generator: |
+      const ids = [
+        'sensor.monarch_spend_today',
+        'sensor.monarch_spend_1_day_ago',
+        'sensor.monarch_spend_2_days_ago',
+        'sensor.monarch_spend_3_days_ago',
+        'sensor.monarch_spend_4_days_ago',
+        'sensor.monarch_spend_5_days_ago',
+        'sensor.monarch_spend_6_days_ago',
+      ];
+      return ids.map((id, i) => {
+        const d = new Date();
+        d.setHours(0, 0, 0, 0);
+        d.setDate(d.getDate() - i);          // i days ago
+        const s = hass.states[id];
+        const v = s ? Number(s.state) : 0;
+        return [d.getTime(), isNaN(v) ? 0 : v];
+      });
+
+# ============================================================================
+# OPTION B — No custom cards needed. A plain Entities card listing the 7 days.
+# Less pretty, but works on a stock Home Assistant install.
+# ============================================================================
+# type: entities
+# title: Daily Spending (Last 7 Days)
+# entities:
+#   - entity: sensor.monarch_spend_today
+#     name: Today
+#   - entity: sensor.monarch_spend_1_day_ago
+#     name: 1 day ago
+#   - entity: sensor.monarch_spend_2_days_ago
+#     name: 2 days ago
+#   - entity: sensor.monarch_spend_3_days_ago
+#     name: 3 days ago
+#   - entity: sensor.monarch_spend_4_days_ago
+#     name: 4 days ago
+#   - entity: sensor.monarch_spend_5_days_ago
+#     name: 5 days ago
+#   - entity: sensor.monarch_spend_6_days_ago
+#     name: 6 days ago

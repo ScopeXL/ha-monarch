@@ -1,0 +1,39 @@
+# Optional Home Assistant automation for the Monarch Money add-on.
+#
+# Notifies you when the add-on loses its login (session expired / awaiting MFA /
+# error) or the add-on is unreachable, so you know to open it and re-authenticate.
+# Without this, those failures are silent — the Monarch sensors just go stale.
+#
+# Requires the auth-health entities from examples/homeassistant-rests.yaml:
+#   - binary_sensor.monarch_api_ready   (on = ready, off = needs attention)
+#   - sensor.monarch_auth_status        (status string + message attribute)
+#
+# This belongs in your HA automations (automations.yaml, or build it under
+# Settings -> Automations), NOT in rests.yaml.
+#
+# Before using: change `notify.notify` to your real notify target,
+# e.g. notify.mobile_app_<your_phone>.
+
+- alias: "Monarch API not ready"
+  id: monarch_api_not_ready
+  trigger:
+    # Session dropped / waiting for MFA / error, and stayed that way 5 minutes.
+    - platform: state
+      entity_id: binary_sensor.monarch_api_ready
+      to: "off"
+      for: { minutes: 5 }
+    # Add-on down or unreachable for 5 minutes.
+    - platform: state
+      entity_id: binary_sensor.monarch_api_ready
+      to: "unavailable"
+      for: { minutes: 5 }
+  action:
+    - service: notify.notify        # <-- change to your notify target
+      data:
+        title: "Monarch needs attention"
+        message: >
+          Monarch API is {{ states('binary_sensor.monarch_api_ready') }}
+          (status: {{ states('sensor.monarch_auth_status') }} –
+          {{ state_attr('sensor.monarch_auth_status', 'message') }}).
+          Open the Monarch add-on to re-enter MFA if needed.
+  mode: single

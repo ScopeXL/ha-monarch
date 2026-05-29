@@ -104,7 +104,23 @@ All return JSON. Query params mirror the CLI flags.
 | `GET /api/subscription` | Monarch subscription details |
 | `GET /api/docs` | Auto-generated Swagger UI |
 
-The server binds to `127.0.0.1` only and has no auth — don't expose it to a network. If you need remote access, put it behind a tunnel (e.g. `ssh -L`).
+The server binds to `127.0.0.1` only by default and has no auth — don't expose it to a network. If you need remote access, put it behind a tunnel (e.g. `ssh -L`). The bind address/port can be overridden with `MONARCH_HOST` / `MONARCH_PORT` (the Home Assistant add-on sets `MONARCH_HOST=0.0.0.0`).
+
+## Home Assistant add-on
+
+This repo doubles as a [Home Assistant add-on repository](https://developers.home-assistant.io/docs/add-ons). The add-on runs the web service under HA's Supervisor, embeds the dashboard in the sidebar via [Ingress](https://developers.home-assistant.io/docs/add-ons/presentation/#ingress), and stores the cached `.mm/` session on the add-on's persistent `/data` volume.
+
+1. In Home Assistant: **Settings → Add-ons → Add-on Store → ⋮ → Repositories**, add this repo's URL.
+2. Install **Monarch Money**, then enter your `email` / `password` in the **Configuration** tab (leave `mfa_secret` blank to enter the code manually).
+3. Start it and open the **Monarch** sidebar panel. On first start, enter your MFA code once; the session is cached and survives restarts.
+
+Credentials come from the add-on options (no `.env` needed). The add-on publishes port `8000` on the host so Home Assistant and other LAN devices can reach the JSON API — it still has no auth, so only run it on a trusted network.
+
+### Home Assistant sensors
+
+To surface the data as HA entities, use [REST sensors](https://www.home-assistant.io/integrations/sensor.rest/) against the API. A ready-to-edit example — net worth, per-account balances, cashflow, and an auth-health binary sensor — is in [`examples/homeassistant-rests.yaml`](examples/homeassistant-rests.yaml). Replace `<HA_HOST_IP>` and the account names, then include it from your config (e.g. `rest: !include rests.yaml`).
+
+Optionally, [`examples/homeassistant-automation.yaml`](examples/homeassistant-automation.yaml) notifies you when the add-on loses its login and needs a re-auth (otherwise the sensors just go stale silently). For dashboards, [`examples/homeassistant-dashboard-cards.yaml`](examples/homeassistant-dashboard-cards.yaml) charts daily spending (last 7 days) as a bar chart.
 
 ## Notes
 
