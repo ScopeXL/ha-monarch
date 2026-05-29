@@ -84,20 +84,22 @@ clickable: false
 entities:
   include: sensor.monarch_recent_transactions
 columns:
+  # modify values are JS expressions. They MUST be quoted — the ternary's
+  # ` : ` would otherwise be read as YAML mapping syntax and fail to parse.
   - name: Date
     data: results
-    modify: x.date
+    modify: "x.date"
   - name: Merchant
     data: results
-    modify: x.merchant ? x.merchant.name : ''
+    modify: "x.merchant ? x.merchant.name : ''"
   - name: Category
     data: results
-    modify: x.category ? x.category.name : ''
+    modify: "x.category ? x.category.name : ''"
   - name: Amount
     data: results
     align: right
     # Monarch amounts are negative for spend; show a signed dollar figure.
-    modify: (x.amount < 0 ? '-$' : '+$') + Math.abs(parseFloat(x.amount)).toFixed(2)
+    modify: "(x.amount < 0 ? '-$' : '+$') + Math.abs(parseFloat(x.amount)).toFixed(2)"
 
 # --- OPTION D — Markdown card (no custom cards; works on a stock HA install).
 # Iterates the same attribute into a simple table.
