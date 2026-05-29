@@ -4,3 +4,6 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+
+# Claude Code local (personal) settings — keep .claude/settings.json shared
+.claude/settings.local.json
