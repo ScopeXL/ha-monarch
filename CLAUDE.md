@@ -84,6 +84,16 @@ user prefers not to be asked each time. Specifically:
 - **Do not commit secrets.** `.env` and `.mm/` are gitignored — keep it so, and
   never hard-code real credentials, account numbers, or session data. The
   example configs use placeholder account names/IDs on purpose.
+- **Keep private things private going forward.** This is a public repo. Anything
+  user-specific and sensitive — account `displayName`s/numbers, real LAN IPs,
+  tokens — must not land in committed files. For Home Assistant examples, the
+  pattern is to reference such values via `!secret` and document the keys (with
+  placeholders only) in `examples/secrets.yaml`; the real `secrets.yaml` lives
+  in the user's HA config, never here. Note `!secret` replaces a whole value and
+  can't be read inside a Jinja template, so the *whole* resource string or
+  per-account template is what moves into secrets. Non-sensitive values (e.g.
+  `localhost` URLs) can stay inline. Already-leaked history is left as-is by
+  decision — the goal is preventing new leaks, not rewriting the past.
 
 When in doubt about whether a change is a good stopping point, prefer committing
 small and often over batching everything into one large commit.
