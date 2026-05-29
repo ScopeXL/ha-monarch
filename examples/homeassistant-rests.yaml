@@ -5,19 +5,23 @@
 # then paste the list items below into rests.yaml (it's a list of resources).
 # Otherwise nest them under a top-level `rest:` key in configuration.yaml.
 #
-# Private values (the add-on's host/port and your account displayNames) are kept
-# out of this file via `!secret` — they live in secrets.yaml. Copy the keys from
-# examples/secrets.yaml into your HA secrets.yaml and fill in your real values.
-# (HA's `!secret` can only replace a whole value and can't be read inside a
-# Jinja template, so each full resource URL and per-account template is stored
-# as its own secret rather than just the host or the account name.)
+# Your account displayNames are kept out of this file via `!secret` — the
+# per-account value templates live in secrets.yaml. Copy the keys from
+# examples/secrets.yaml into your HA secrets.yaml and fill in your real account
+# names. (HA's `!secret` can only replace a whole value and can't be read inside
+# a Jinja template, so each full per-account template is stored as its own
+# secret rather than just the account name.)
+#
+# The resource URLs below point at localhost:8000. If your REST sensors run in
+# HA Core (which can't reach the add-on at localhost), change localhost to the
+# add-on host's LAN IP + published port 8000.
 #
 # Endpoints return HTTP 503 until the one-time MFA login is done in the add-on
 # dashboard. Until then these sensors read "unknown" — they recover on their own
 # once auth is ready. Keep scan_interval generous; every poll hits Monarch's API.
 
 # --- Net worth + per-account balances (ONE fetch feeds all of these) --------
-- resource: !secret monarch_balance_resource    # GET /api/balance
+- resource: "http://localhost:8000/api/balance"
   scan_interval: 3600
   sensor:
     - name: "Monarch Net Worth"
@@ -95,7 +99,7 @@
       icon: mdi:credit-card-lock
 
 # --- Cashflow (income / expenses / savings) ---------------------------------
-- resource: !secret monarch_cashflow_resource    # GET /api/cashflow
+- resource: "http://localhost:8000/api/cashflow"
   scan_interval: 3600
   sensor:
     - name: "Monarch Income (Month)"
@@ -133,7 +137,8 @@
 # sum of negative amounts (expenses are negative in Monarch), flipped positive.
 # Recomputed from source every poll, so late-posting/recategorized transactions
 # stay accurate across all 7 days. limit=500 is plenty for a week.
-- resource_template: !secret monarch_transactions_resource    # GET /api/transactions (rolling 7d)
+- resource_template: >-
+    http://localhost:8000/api/transactions?limit=500&start_date={{ (now() - timedelta(days=6)).strftime('%Y-%m-%d') }}&end_date={{ now().strftime('%Y-%m-%d') }}
   scan_interval: 3600
   sensor:
     - name: "Monarch Spend Today"
@@ -227,7 +232,7 @@
 # awaiting_mfa after a restart, or an error). If the add-on is down/unreachable
 # the request fails and the sensor goes "unavailable". The status/message are
 # exposed as attributes so you can see *why* it isn't ready.
-- resource: !secret monarch_auth_resource    # GET /api/auth/status
+- resource: "http://localhost:8000/api/auth/status"
   scan_interval: 60
   # In the `rest:` integration, json_attributes is only valid on a `sensor`
   # (not on binary_sensor, and not at the resource level). So the raw status +
