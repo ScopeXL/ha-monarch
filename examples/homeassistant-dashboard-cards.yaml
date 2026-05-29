@@ -50,23 +50,23 @@ series:
 # OPTION B — No custom cards needed. A plain Entities card listing the 7 days.
 # Less pretty, but works on a stock Home Assistant install.
 # ============================================================================
-# type: entities
-# title: Daily Spending (Last 7 Days)
-# entities:
-#   - entity: sensor.monarch_spend_today
-#     name: Today
-#   - entity: sensor.monarch_spend_1_day_ago
-#     name: 1 day ago
-#   - entity: sensor.monarch_spend_2_days_ago
-#     name: 2 days ago
-#   - entity: sensor.monarch_spend_3_days_ago
-#     name: 3 days ago
-#   - entity: sensor.monarch_spend_4_days_ago
-#     name: 4 days ago
-#   - entity: sensor.monarch_spend_5_days_ago
-#     name: 5 days ago
-#   - entity: sensor.monarch_spend_6_days_ago
-#     name: 6 days ago
+type: entities
+title: Daily Spending (Last 7 Days)
+entities:
+  - entity: sensor.monarch_spend_today
+    name: Today
+  - entity: sensor.monarch_spend_1_day_ago
+    name: 1 day ago
+  - entity: sensor.monarch_spend_2_days_ago
+    name: 2 days ago
+  - entity: sensor.monarch_spend_3_days_ago
+    name: 3 days ago
+  - entity: sensor.monarch_spend_4_days_ago
+    name: 4 days ago
+  - entity: sensor.monarch_spend_5_days_ago
+    name: 5 days ago
+  - entity: sensor.monarch_spend_6_days_ago
+    name: 6 days ago
 
 # ============================================================================
 # RECENT TRANSACTIONS (last 10) — reads the `results` list attribute on
@@ -78,36 +78,36 @@ series:
 # flex-table-card from HACS: https://github.com/custom-cards/flex-table-card).
 # Each element of the `results` array becomes a row; `x` is that element.
 # ----------------------------------------------------------------------------
-# type: custom:flex-table-card
-# title: Recent Transactions
-# clickable: false
-# entities:
-#   include: sensor.monarch_recent_transactions
-# columns:
-#   - name: Date
-#     data: results
-#     modify: x.date
-#   - name: Merchant
-#     data: results
-#     modify: x.merchant ? x.merchant.name : ''
-#   - name: Category
-#     data: results
-#     modify: x.category ? x.category.name : ''
-#   - name: Amount
-#     data: results
-#     align: right
-#     # Monarch amounts are negative for spend; show a signed dollar figure.
-#     modify: (x.amount < 0 ? '-$' : '+$') + Math.abs(parseFloat(x.amount)).toFixed(2)
+type: custom:flex-table-card
+title: Recent Transactions
+clickable: false
+entities:
+  include: sensor.monarch_recent_transactions
+columns:
+  - name: Date
+    data: results
+    modify: x.date
+  - name: Merchant
+    data: results
+    modify: x.merchant ? x.merchant.name : ''
+  - name: Category
+    data: results
+    modify: x.category ? x.category.name : ''
+  - name: Amount
+    data: results
+    align: right
+    # Monarch amounts are negative for spend; show a signed dollar figure.
+    modify: (x.amount < 0 ? '-$' : '+$') + Math.abs(parseFloat(x.amount)).toFixed(2)
 
 # --- OPTION D — Markdown card (no custom cards; works on a stock HA install).
 # Iterates the same attribute into a simple table.
 # ----------------------------------------------------------------------------
-# type: markdown
-# title: Recent Transactions
-# content: |-
-#   {% set rows = state_attr('sensor.monarch_recent_transactions', 'results') or [] -%}
-#   | Date | Merchant | Amount |
-#   |------|----------|-------:|
-#   {% for t in rows -%}
-#   | {{ t.date }} | {{ t.merchant.name if t.merchant else '—' }} | {{ '%+.2f' | format(t.amount | float(0)) }} |
-#   {% endfor -%}
+type: markdown
+title: Recent Transactions
+content: |-
+  {% set rows = state_attr('sensor.monarch_recent_transactions', 'results') or [] -%}
+  | Date | Merchant | Amount |
+  |------|----------|-------:|
+  {% for t in rows -%}
+  | {{ t.date }} | {{ t.merchant.name if t.merchant else '—' }} | {{ '%+.2f' | format(t.amount | float(0)) }} |
+  {% endfor -%}
