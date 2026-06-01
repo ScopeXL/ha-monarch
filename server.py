@@ -326,4 +326,16 @@ if __name__ == "__main__":
     import uvicorn
     host = os.environ.get("MONARCH_HOST", "127.0.0.1")
     port = int(os.environ.get("MONARCH_PORT", "8000"))
-    uvicorn.run("server:app", host=host, port=port, reload=False)
+    # Every /api/* call proxies Monarch's API and takes several seconds. Home
+    # Assistant's `rest:` integration reuses a single pooled keep-alive
+    # connection across the sensors it polls at each tick, so the gap between
+    # two reused requests routinely exceeds uvicorn's default 5s keep-alive
+    # window. uvicorn then closes the idle connection and HA's next reused
+    # request fails with "Server disconnected" / "Connection reset by peer",
+    # leaving the sensor "Unknown". Hold idle connections open well past that
+    # gap so the client never reuses a connection the server just closed.
+    keep_alive = int(os.environ.get("MONARCH_KEEPALIVE", "120"))
+    uvicorn.run(
+        "server:app", host=host, port=port, reload=False,
+        timeout_keep_alive=keep_alive,
+    )
