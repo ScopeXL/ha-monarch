@@ -66,8 +66,14 @@ ADD https://github.com/ScopeXL/ha-monarch/archive/refs/tags/v${BUILD_VERSION}.ta
   users after a version bump + tagged release — they are not picked up from the
   branch.
 
-When you change app code that add-on users should get, flag that a version bump
-and release are needed; don't bump the version silently.
+When you change app code that add-on users should get (in `monarch.py`,
+`server.py`, `static/`) and a tagged release is therefore needed, **bump the
+patch (third) version component automatically** — e.g. `1.0.3` → `1.0.4` — in
+`monarch_addon/config.yaml`, commit it, then create and push a matching
+annotated `v<version>` git tag and a GitHub release (`gh release create`). Do
+this on your own without asking. Only ever auto-increment the patch number; the
+maintainer bumps the major/minor version by hand, and you resume
+patch-incrementing from whatever they set.
 
 ## Git workflow — commit and push proactively
 

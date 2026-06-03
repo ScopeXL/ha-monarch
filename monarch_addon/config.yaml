@@ -1,5 +1,5 @@
 name: Monarch Money
-version: "1.0.2"
+version: "1.0.3"
 slug: monarch_money
 description: Read-only Monarch Money dashboard and JSON API
 url: https://github.com/ScopeXL/ha-monarch
