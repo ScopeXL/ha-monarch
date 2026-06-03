@@ -423,7 +423,10 @@ async def _safe(coro):
 
 @app.get("/")
 async def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+    # no-cache: force the browser to revalidate this page on every load instead
+    # of serving it from its heuristic cache, so a new add-on version's dashboard
+    # shows up on a normal reload rather than being masked by a stale cached page.
+    return FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"})
 
 
 # --- Auth ---------------------------------------------------------------
