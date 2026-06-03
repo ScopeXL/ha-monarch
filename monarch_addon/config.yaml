@@ -16,7 +16,11 @@ options:
   email: ""
   password: ""
   mfa_secret: ""
+  tz: ""
+  refresh_times: ""
 schema:
   email: str
   password: password
   mfa_secret: str?
+  tz: str?
+  refresh_times: str?

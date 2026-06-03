@@ -3,3 +3,6 @@ python-dotenv>=1.0.0
 rich>=13.0.0
 fastapi>=0.110
 uvicorn[standard]>=0.27
+# Bundles the IANA timezone database so MONARCH_TZ (zoneinfo) resolves inside
+# the slim add-on container, which may lack the system tz database.
+tzdata>=2024.1

@@ -31,9 +31,16 @@
         <h1 class="text-xl font-semibold tracking-tight">Monarch Dashboard</h1>
         <p class="text-xs text-slate-400">Local dashboard · <span id="refreshed">never refreshed</span></p>
       </div>
-      <button id="refresh" class="px-3 py-1.5 text-sm rounded-md bg-slate-800 hover:bg-slate-700 border border-slate-700 transition">
-        Refresh
-      </button>
+      <div class="flex items-center gap-3">
+        <span id="countdown" class="text-xs text-slate-400 tabular-nums hidden"></span>
+        <span id="sync-status" class="text-xs hidden"></span>
+        <button id="sync" class="px-3 py-1.5 text-sm rounded-md bg-slate-800 hover:bg-slate-700 border border-slate-700 transition" title="Ask Monarch to re-sync all accounts from their institutions">
+          Sync
+        </button>
+        <button id="refresh" class="px-3 py-1.5 text-sm rounded-md bg-slate-800 hover:bg-slate-700 border border-slate-700 transition" title="Reload the dashboard from cached Monarch data">
+          Refresh
+        </button>
+      </div>
     </div>
   </header>
 
@@ -109,8 +116,8 @@
       '<div class="text-sm text-rose-400 bg-rose-950/30 border border-rose-900/50 rounded-md p-3">' +
       'Failed to load. ' + (msg || '') + '</div>';
 
-    async function fetchJSON(path) {
-      const r = await fetch(path);
+    async function fetchJSON(path, opts) {
+      const r = await fetch(path, opts);
       if (!r.ok) {
         let body = '';
         try { body = (await r.json()).detail || ''; } catch {}
@@ -405,6 +412,119 @@
       document.getElementById('refresh').disabled = false;
     }
 
+    // --- Account refresh (Monarch re-sync) -----------------------------
+    // "Sync" asks Monarch to pull fresh data from each institution (slow), as
+    // opposed to "Refresh" which just reloads what the server already has. The
+    // server also fires syncs at the configured times; we poll its status so
+    // the UI reflects scheduled syncs we didn't start.
+
+    let refreshState = null;
+    let lastRunning = false;
+    let pollGen = 0;            // bumping this retires any other polling loop
+    let countdownTarget = null;
+    let countdownTimer = null;
+
+    function flashSyncStatus(cls, label) {
+      const el = document.getElementById('sync-status');
+      el.className = 'text-xs ' + cls;
+      el.textContent = label;
+      el.classList.remove('hidden');
+      clearTimeout(el._hideTimer);
+      el._hideTimer = setTimeout(() => { el.classList.add('hidden'); el._hideTimer = null; }, 5000);
+    }
+
+    function applyRefreshState(s) {
+      refreshState = s;
+      const syncBtn = document.getElementById('sync');
+      const statusEl = document.getElementById('sync-status');
+
+      if (s.running) {
+        syncBtn.classList.add('hidden');
+        statusEl.className = 'text-xs text-amber-400 flex items-center gap-2';
+        statusEl.innerHTML = '<span class="h-2 w-2 rounded-full bg-amber-400 animate-pulse"></span>Syncing…';
+        statusEl.classList.remove('hidden');
+        clearTimeout(statusEl._hideTimer);
+        statusEl._hideTimer = null;
+      } else {
+        syncBtn.classList.remove('hidden');
+        if (lastRunning) {
+          // Just finished — show a brief outcome chip.
+          const map = {
+            success: ['text-emerald-400', 'Synced'],
+            timeout: ['text-amber-400', 'Sync timed out'],
+            error: ['text-rose-400', 'Sync failed'],
+          };
+          const [cls, label] = map[s.last_result] || ['text-slate-400', s.last_result || 'Done'];
+          flashSyncStatus(cls, label);
+        } else if (!statusEl._hideTimer) {
+          statusEl.classList.add('hidden');
+        }
+      }
+
+      // Reload dashboard data once when a sync transitions running -> done.
+      if (lastRunning && !s.running) loadAll();
+      lastRunning = s.running;
+
+      // Hide the countdown while a sync is running (its target is in the past).
+      setCountdownTarget(s.running ? null : s.next_scheduled_at);
+    }
+
+    function setCountdownTarget(iso) {
+      const el = document.getElementById('countdown');
+      const target = iso ? new Date(iso) : null;
+      if (!target || isNaN(target.getTime())) {
+        countdownTarget = null;
+        el.classList.add('hidden');
+        if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+        return;
+      }
+      countdownTarget = target;
+      el.classList.remove('hidden');
+      if (!countdownTimer) countdownTimer = setInterval(tickCountdown, 1000);
+      tickCountdown();
+    }
+
+    function tickCountdown() {
+      const el = document.getElementById('countdown');
+      if (!countdownTarget) return;
+      const ms = countdownTarget.getTime() - Date.now();
+      if (ms <= 0) { el.textContent = 'next sync due…'; return; }
+      const total = Math.floor(ms / 1000);
+      const h = Math.floor(total / 3600);
+      const m = Math.floor((total % 3600) / 60);
+      const sec = total % 60;
+      let txt;
+      if (h > 0) txt = h + 'h ' + m + 'm';
+      else if (m > 0) txt = m + 'm ' + String(sec).padStart(2, '0') + 's';
+      else txt = sec + 's';
+      el.textContent = 'next sync in ' + txt;
+    }
+
+    async function pollRefreshStatus() {
+      const myGen = ++pollGen;  // retire any previously running loop
+      while (myGen === pollGen) {
+        try {
+          applyRefreshState(await fetchJSON('api/refresh/status'));
+        } catch (e) { /* transient; try again next tick */ }
+        if (myGen !== pollGen) break;
+        // Poll fast while a sync runs, slow when idle.
+        await sleep((refreshState && refreshState.running) ? 3000 : 20000);
+      }
+    }
+
+    async function onSyncClick() {
+      const btn = document.getElementById('sync');
+      btn.disabled = true;
+      try {
+        applyRefreshState(await fetchJSON('api/refresh/sync', { method: 'POST' }));
+        pollRefreshStatus();  // restart polling at the fast cadence immediately
+      } catch (e) {
+        flashSyncStatus('text-rose-400', 'Sync failed to start');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
     // --- Auth gate -----------------------------------------------------
 
     const authBanner = document.getElementById('auth-banner');
@@ -535,6 +655,7 @@
       try {
         await ensureReady();
         await loadAll();
+        pollRefreshStatus();  // begin watching refresh status (scheduled + manual)
       } catch (e) {
         // ensureReady already rendered the error banner; leave cards in skeleton state.
       } finally {
@@ -543,6 +664,7 @@
     }
 
     document.getElementById('refresh').addEventListener('click', loadAll);
+    document.getElementById('sync').addEventListener('click', onSyncClick);
     init();
   </script>
 </body>

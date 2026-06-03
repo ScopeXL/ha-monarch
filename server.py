@@ -9,10 +9,14 @@ code via POST /api/auth/mfa.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
-from contextlib import asynccontextmanager
+import time
+from contextlib import asynccontextmanager, suppress
+from datetime import datetime, time as dtime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
@@ -23,6 +27,11 @@ from monarchmoney import LoginFailedException, MonarchMoney, RequireMFAException
 from pydantic import BaseModel
 
 from monarch import compute_net_worth
+
+# Read .env at import so RefreshState (constructed below) sees the schedule
+# config. begin_login() calls load_dotenv() again, which is harmless.
+load_dotenv()
+log = logging.getLogger("monarch.server")
 
 
 # Mirrors the library's GetAccounts query (monarchmoney.py:188) but adds
@@ -190,11 +199,220 @@ class AuthState:
 auth = AuthState()
 
 
+# --- Account refresh scheduling -----------------------------------------
+
+def _load_tz() -> tuple[ZoneInfo | None, str]:
+    """Resolve MONARCH_TZ to a tzinfo. Returns (tz_or_None, label); None means
+    "use the host's local time". Falls back to local on an unset/invalid name."""
+    name = (os.environ.get("MONARCH_TZ") or "").strip()
+    if not name:
+        return None, "local"
+    try:
+        return ZoneInfo(name), name
+    except (ZoneInfoNotFoundError, ValueError):
+        log.warning("Invalid MONARCH_TZ=%r; using host local time", name)
+        return None, "local"
+
+
+def _parse_times(raw: str | None) -> list[dtime]:
+    """Parse "06:00,12:00,18:00" into sorted, de-duplicated times of day.
+    Invalid entries are skipped with a warning."""
+    out: set[dtime] = set()
+    for tok in (raw or "").split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        try:
+            hh, mm = tok.split(":")
+            out.add(dtime(int(hh), int(mm)))
+        except (ValueError, TypeError):
+            log.warning("Ignoring invalid MONARCH_REFRESH_TIMES entry: %r", tok)
+    return sorted(out)
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name) or default)
+    except (ValueError, TypeError):
+        log.warning("Invalid %s=%r; using %d", name, os.environ.get(name), default)
+        return default
+
+
+class RefreshState:
+    """Schedule config plus the live status of Monarch account refreshes.
+
+    A refresh asks Monarch to re-sync every account from its institution, then
+    polls until Monarch reports the sync done. The single asyncio.Lock makes
+    manual (dashboard) and scheduled refreshes mutually exclusive.
+    """
+
+    def __init__(self) -> None:
+        self.tz, self.tz_label = _load_tz()
+        self.scheduled_times = _parse_times(os.environ.get("MONARCH_REFRESH_TIMES"))
+        self.timeout = max(1, _int_env("MONARCH_REFRESH_TIMEOUT", 300))
+        self.delay = max(1, _int_env("MONARCH_REFRESH_DELAY", 10))
+
+        self.running: bool = False
+        self.started_at: datetime | None = None
+        self.last_completed_at: datetime | None = None
+        self.last_result: str | None = None  # success | timeout | error
+        self.last_error: str | None = None
+        self.next_scheduled_at: datetime | None = None
+        self._lock = asyncio.Lock()
+
+    def _now(self) -> datetime:
+        return datetime.now(self.tz) if self.tz else datetime.now().astimezone()
+
+    def _combine(self, day, t: dtime) -> datetime:
+        if self.tz:
+            return datetime.combine(day, t, tzinfo=self.tz)
+        # Interpret the wall-clock time in host-local time (DST-correct).
+        return datetime.combine(day, t).astimezone()
+
+    def compute_next(self, after: datetime) -> datetime | None:
+        """Earliest scheduled datetime strictly after `after`, or None when no
+        times are configured."""
+        if not self.scheduled_times:
+            return None
+        for day_offset in range(0, 8):
+            day = (after + timedelta(days=day_offset)).date()
+            for t in self.scheduled_times:
+                cand = self._combine(day, t)
+                if cand > after:
+                    return cand
+        return None  # unreachable: 8 days always contains a future slot
+
+    def to_dict(self) -> dict:
+        def iso(dt: datetime | None) -> str | None:
+            return dt.isoformat() if dt else None
+
+        return {
+            "running": self.running,
+            "started_at": iso(self.started_at),
+            "last_completed_at": iso(self.last_completed_at),
+            "last_result": self.last_result,
+            "last_error": self.last_error,
+            "next_scheduled_at": iso(self.next_scheduled_at),
+            "scheduled_times": [t.strftime("%H:%M") for t in self.scheduled_times],
+            "tz": self.tz_label,
+            "enabled": bool(self.scheduled_times),
+        }
+
+
+rs = RefreshState()
+
+
+async def _do_refresh(reason: str) -> None:
+    """Ask Monarch to refresh every account, then poll until done or timeout.
+
+    Shared by the manual endpoint and the scheduler. Single-flight via the lock;
+    a no-op if a refresh is already running. Never raises — the outcome is
+    recorded on `rs` (last_result/last_error) instead.
+    """
+    if rs._lock.locked():
+        log.info("Refresh (%s) skipped: a refresh is already running", reason)
+        return
+    async with rs._lock:
+        if auth.status != "ready" or auth.client is None:
+            log.warning("Refresh (%s) skipped: auth not ready (status=%s)", reason, auth.status)
+            rs.running = False  # clear any optimistic flag set by the endpoint
+            return
+        client = auth.client
+        rs.running = True
+        rs.started_at = rs._now()
+        rs.last_error = None
+        log.info("Account refresh started (%s)", reason)
+        try:
+            data = await fetch_accounts(client)
+            ids = [str(a["id"]) for a in data.get("accounts", []) if a.get("id") is not None]
+            if not ids:
+                rs.last_result = "error"
+                rs.last_error = "No account IDs returned by Monarch"
+                log.warning("Refresh (%s): no account IDs to refresh", reason)
+                return
+            await client.request_accounts_refresh(ids)
+            # Sleep-then-poll: give Monarch a moment to mark the sync in-progress
+            # before the first check (mirrors the library's wait helper).
+            deadline = time.monotonic() + rs.timeout
+            done = False
+            while time.monotonic() < deadline:
+                await asyncio.sleep(rs.delay)
+                try:
+                    done = await client.is_accounts_refresh_complete(ids)
+                except Exception as e:  # transient; keep polling until the deadline
+                    log.warning("Refresh (%s) status poll error: %s", reason, e)
+                    continue
+                if done:
+                    break
+            rs.last_result = "success" if done else "timeout"
+            log.info("Account refresh (%s) %s", reason, rs.last_result)
+        except Exception as e:
+            rs.last_result = "error"
+            rs.last_error = str(e)
+            log.exception("Account refresh (%s) failed", reason)
+        finally:
+            rs.running = False
+            rs.last_completed_at = rs._now()
+
+
+async def _scheduler_loop() -> None:
+    """Fire _do_refresh at each configured time of day. Resilient: never dies on
+    an exception, re-evaluates the next slot periodically so DST/suspend clock
+    jumps can't make it drift, and waits for auth before firing."""
+    if not rs.scheduled_times:
+        log.info("Refresh scheduler disabled (MONARCH_REFRESH_TIMES is empty)")
+        return
+    log.info(
+        "Refresh scheduler enabled: times=%s tz=%s",
+        [t.strftime("%H:%M") for t in rs.scheduled_times], rs.tz_label,
+    )
+    while True:
+        try:
+            now = rs._now()
+            nxt = rs.compute_next(now)
+            rs.next_scheduled_at = nxt
+            if nxt is None:
+                await asyncio.sleep(3600)
+                continue
+            # Cap each nap so a DST change or laptop suspend/resume gets noticed
+            # within ~5 min instead of letting an absolute sleep drift.
+            await asyncio.sleep(min(max((nxt - now).total_seconds(), 0), 300))
+            if rs._now() < nxt:
+                continue  # woke early from the cap; recompute and keep waiting
+            # Reached the slot. Wait (bounded) for login before firing so we
+            # don't fire into a 503; if it never readies, skip and move on.
+            waited = 0
+            while auth.status != "ready" and waited < 600:
+                await asyncio.sleep(5)
+                waited += 5
+            if auth.status == "ready":
+                await _do_refresh(reason=f"scheduled {nxt.strftime('%H:%M')}")
+            else:
+                log.warning("Skipped scheduled refresh at %s: auth not ready (status=%s)",
+                            nxt.strftime("%H:%M"), auth.status)
+            # Advance strictly past this slot so it can never re-fire.
+            after = rs._now()
+            if after <= nxt:
+                after = nxt + timedelta(seconds=1)
+            rs.next_scheduled_at = rs.compute_next(after)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Refresh scheduler iteration failed; retrying in 60s")
+            await asyncio.sleep(60)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     # Kick off login in the background; never block startup on it.
     asyncio.create_task(auth.begin_login())
-    yield
+    scheduler_task = asyncio.create_task(_scheduler_loop())
+    try:
+        yield
+    finally:
+        scheduler_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await scheduler_task
 
 
 app = FastAPI(title="Monarch dashboard", docs_url="/api/docs", redoc_url=None, lifespan=lifespan)
@@ -246,6 +464,36 @@ async def api_auth_mfa(body: MfaBody):
         raise HTTPException(status_code=400, detail="Missing code")
     ok = await auth.submit_mfa(code)
     return {"ok": ok, "status": auth.status, "message": auth.message}
+
+
+# --- Refresh ------------------------------------------------------------
+
+@app.get("/api/refresh/status")
+async def api_refresh_status():
+    """Live refresh status + the next scheduled time. Reads in-memory state only,
+    so it is safe to poll before login completes."""
+    return rs.to_dict()
+
+
+@app.post("/api/refresh/sync")
+async def api_refresh_sync():
+    """Trigger a Monarch account refresh now. Non-blocking: kicks off the work in
+    the background and returns the current state immediately."""
+    if auth.status != "ready" or auth.client is None:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Auth not ready (status={auth.status}). Check /api/auth/status.",
+        )
+    # `rs.running` is read-then-set with no await in between, so two concurrent
+    # POSTs can't both start a refresh. Set it optimistically so the dashboard
+    # flips to "syncing" on this response; _do_refresh re-confirms under the lock.
+    if rs.running:
+        return rs.to_dict()
+    rs.running = True
+    rs.started_at = rs._now()
+    rs.last_error = None
+    asyncio.create_task(_do_refresh(reason="manual"))
+    return rs.to_dict()
 
 
 # --- Data ---------------------------------------------------------------
@@ -324,6 +572,10 @@ async def api_subscription():
 
 if __name__ == "__main__":
     import uvicorn
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     host = os.environ.get("MONARCH_HOST", "127.0.0.1")
     port = int(os.environ.get("MONARCH_PORT", "8000"))
     # Every /api/* call proxies Monarch's API and takes several seconds. Home
