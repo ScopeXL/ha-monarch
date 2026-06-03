@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import time
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, time as dtime, timedelta
 from pathlib import Path
@@ -62,6 +61,7 @@ _GET_ACCOUNTS_WITH_LIMIT = gql(
       createdAt
       updatedAt
       displayLastUpdatedAt
+      hasSyncInProgress
       currentBalance
       displayBalance
       limit
@@ -230,32 +230,26 @@ def _parse_times(raw: str | None) -> list[dtime]:
     return sorted(out)
 
 
-def _int_env(name: str, default: int) -> int:
-    try:
-        return int(os.environ.get(name) or default)
-    except (ValueError, TypeError):
-        log.warning("Invalid %s=%r; using %d", name, os.environ.get(name), default)
-        return default
-
-
 class RefreshState:
-    """Schedule config plus the live status of Monarch account refreshes.
+    """Schedule config plus the status of the last Monarch account refresh.
 
-    A refresh asks Monarch to re-sync every account from its institution, then
-    polls until Monarch reports the sync done. The single asyncio.Lock makes
-    manual (dashboard) and scheduled refreshes mutually exclusive.
+    A refresh asks Monarch to re-sync every account from its institution. We
+    fire the request and record that we asked; we do *not* poll to a timeout —
+    a slow institution can take many minutes, and Monarch may leave a sync
+    flagged in-progress long after, so a "timeout" verdict misrepresented a
+    request Monarch had actually accepted. Live, per-account progress is
+    surfaced instead via each account's `hasSyncInProgress` /
+    `displayLastUpdatedAt` (see /api/accounts and the dashboard). The single
+    asyncio.Lock keeps a manual and a scheduled request from firing at once.
     """
 
     def __init__(self) -> None:
         self.tz, self.tz_label = _load_tz()
         self.scheduled_times = _parse_times(os.environ.get("MONARCH_REFRESH_TIMES"))
-        self.timeout = max(1, _int_env("MONARCH_REFRESH_TIMEOUT", 300))
-        self.delay = max(1, _int_env("MONARCH_REFRESH_DELAY", 10))
 
-        self.running: bool = False
-        self.started_at: datetime | None = None
-        self.last_completed_at: datetime | None = None
-        self.last_result: str | None = None  # success | timeout | error
+        self.last_requested_at: datetime | None = None
+        self.last_reason: str | None = None
+        self.last_result: str | None = None  # requested | error
         self.last_error: str | None = None
         self.next_scheduled_at: datetime | None = None
         self._lock = asyncio.Lock()
@@ -287,9 +281,8 @@ class RefreshState:
             return dt.isoformat() if dt else None
 
         return {
-            "running": self.running,
-            "started_at": iso(self.started_at),
-            "last_completed_at": iso(self.last_completed_at),
+            "last_requested_at": iso(self.last_requested_at),
+            "last_reason": self.last_reason,
             "last_result": self.last_result,
             "last_error": self.last_error,
             "next_scheduled_at": iso(self.next_scheduled_at),
@@ -303,25 +296,26 @@ rs = RefreshState()
 
 
 async def _do_refresh(reason: str) -> None:
-    """Ask Monarch to refresh every account, then poll until done or timeout.
+    """Ask Monarch to re-sync every account from its institution, then return.
 
-    Shared by the manual endpoint and the scheduler. Single-flight via the lock;
-    a no-op if a refresh is already running. Never raises — the outcome is
-    recorded on `rs` (last_result/last_error) instead.
+    Shared by the manual endpoint and the scheduler. We fire the force-refresh
+    and record that Monarch accepted it (last_result="requested"); we do not
+    wait for completion. Progress is observed per-account afterwards via
+    `hasSyncInProgress` / `displayLastUpdatedAt`. Single-flight via the lock so a
+    manual and a scheduled request can't fire at the same instant. Never raises —
+    a failed request is recorded on `rs` (last_result="error", last_error).
     """
     if rs._lock.locked():
-        log.info("Refresh (%s) skipped: a refresh is already running", reason)
+        log.info("Refresh (%s) skipped: a refresh request is already in flight", reason)
         return
     async with rs._lock:
         if auth.status != "ready" or auth.client is None:
             log.warning("Refresh (%s) skipped: auth not ready (status=%s)", reason, auth.status)
-            rs.running = False  # clear any optimistic flag set by the endpoint
             return
         client = auth.client
-        rs.running = True
-        rs.started_at = rs._now()
+        rs.last_reason = reason
         rs.last_error = None
-        log.info("Account refresh started (%s)", reason)
+        log.info("Account refresh requested (%s)", reason)
         try:
             data = await fetch_accounts(client)
             ids = [str(a["id"]) for a in data.get("accounts", []) if a.get("id") is not None]
@@ -331,28 +325,14 @@ async def _do_refresh(reason: str) -> None:
                 log.warning("Refresh (%s): no account IDs to refresh", reason)
                 return
             await client.request_accounts_refresh(ids)
-            # Sleep-then-poll: give Monarch a moment to mark the sync in-progress
-            # before the first check (mirrors the library's wait helper).
-            deadline = time.monotonic() + rs.timeout
-            done = False
-            while time.monotonic() < deadline:
-                await asyncio.sleep(rs.delay)
-                try:
-                    done = await client.is_accounts_refresh_complete(ids)
-                except Exception as e:  # transient; keep polling until the deadline
-                    log.warning("Refresh (%s) status poll error: %s", reason, e)
-                    continue
-                if done:
-                    break
-            rs.last_result = "success" if done else "timeout"
-            log.info("Account refresh (%s) %s", reason, rs.last_result)
+            rs.last_result = "requested"
+            rs.last_requested_at = rs._now()
+            log.info("Account refresh (%s): Monarch accepted the request for %d account(s)",
+                     reason, len(ids))
         except Exception as e:
             rs.last_result = "error"
             rs.last_error = str(e)
-            log.exception("Account refresh (%s) failed", reason)
-        finally:
-            rs.running = False
-            rs.last_completed_at = rs._now()
+            log.exception("Account refresh (%s) request failed", reason)
 
 
 async def _scheduler_loop() -> None:
@@ -470,28 +450,23 @@ async def api_auth_mfa(body: MfaBody):
 
 @app.get("/api/refresh/status")
 async def api_refresh_status():
-    """Live refresh status + the next scheduled time. Reads in-memory state only,
-    so it is safe to poll before login completes."""
+    """Schedule + last-refresh-request status: the next scheduled time, when we
+    last asked Monarch to sync, and whether that request was accepted or failed.
+    Reads in-memory state only, so it is safe to poll before login completes.
+    (Live per-account sync progress comes from /api/accounts.)"""
     return rs.to_dict()
 
 
 @app.post("/api/refresh/sync")
 async def api_refresh_sync():
-    """Trigger a Monarch account refresh now. Non-blocking: kicks off the work in
-    the background and returns the current state immediately."""
+    """Trigger a Monarch account refresh now. Non-blocking: fires the request in
+    the background and returns immediately. The dashboard then watches each
+    account's hasSyncInProgress to show live, per-account progress."""
     if auth.status != "ready" or auth.client is None:
         raise HTTPException(
             status_code=503,
             detail=f"Auth not ready (status={auth.status}). Check /api/auth/status.",
         )
-    # `rs.running` is read-then-set with no await in between, so two concurrent
-    # POSTs can't both start a refresh. Set it optimistically so the dashboard
-    # flips to "syncing" on this response; _do_refresh re-confirms under the lock.
-    if rs.running:
-        return rs.to_dict()
-    rs.running = True
-    rs.started_at = rs._now()
-    rs.last_error = None
     asyncio.create_task(_do_refresh(reason="manual"))
     return rs.to_dict()
 

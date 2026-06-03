@@ -128,10 +128,15 @@
 
     // Owns the container, re-renders on header click. Each column has a `key`
     // that indexes into the row object; an optional `<key>HTML` field on the row
-    // is used for display while `<key>` is used for sorting.
+    // is used for display while `<key>` is used for sorting. The chosen sort is
+    // remembered on the container so silent re-renders (e.g. live updates while a
+    // sync runs) keep the user's column/direction instead of snapping back.
     function sortableTable(container, columns, rows, defaultSort) {
-      let sortKey = defaultSort.key;
-      let sortDir = defaultSort.dir;
+      const saved = container._sort;
+      const valid = saved && columns.some(c => c.key === saved.key);
+      let sortKey = valid ? saved.key : defaultSort.key;
+      let sortDir = valid ? saved.dir : defaultSort.dir;
+      container._sort = { key: sortKey, dir: sortDir };
 
       function compare(a, b) {
         const av = a[sortKey], bv = b[sortKey];
@@ -167,6 +172,7 @@
             const k = th.dataset.sortKey;
             if (k === sortKey) sortDir = sortDir === 'asc' ? 'desc' : 'asc';
             else { sortKey = k; sortDir = 'asc'; }
+            container._sort = { key: sortKey, dir: sortDir };
             render();
           });
         });
@@ -211,9 +217,73 @@
       c.innerHTML = html;
     }
 
+    // A sync that's been running longer than this reads as "slow" rather than
+    // just "syncing" — Monarch can leave a force-refresh flagged for many
+    // minutes, so this is a hint, not an error.
+    const STALL_MS = 8 * 60 * 1000;
+
+    function relTime(iso, now) {
+      if (!iso) return null;
+      const then = new Date(iso).getTime();
+      if (!Number.isFinite(then)) return null;
+      const s = Math.max(0, Math.floor((now - then) / 1000));
+      if (s < 45) return 'just now';
+      const m = Math.floor(s / 60);
+      if (m < 60) return m + 'm ago';
+      const h = Math.floor(m / 60);
+      if (h < 24) return h + 'h ago';
+      const d = Math.floor(h / 24);
+      if (d < 30) return d + 'd ago';
+      return new Date(then).toLocaleDateString();
+    }
+
+    // Per-account status, derived primarily from hasSyncInProgress (the same
+    // flag Monarch's refresh-complete check uses), layered with connection
+    // health so a row can also read "errored", and with how long the current
+    // request has run so a long sync reads "slow" instead of silently stuck.
+    // Returns { rank, html }; rank sorts most-attention-worthy first.
+    function accountStatusCell(a, reqAt, now) {
+      const cred = a.credential || {};
+      const dot = (cls) => `<span class="inline-block h-2 w-2 rounded-full ${cls}"></span>`;
+      const badge = (cls, label, lead) =>
+        `<span class="inline-flex items-center gap-1.5 ${cls}">${lead || ''}${escapeHTML(label)}</span>`;
+      if (cred.disconnectedFromDataProviderAt)
+        return { rank: 0, html: badge('text-rose-400', 'Disconnected', dot('bg-rose-400')) };
+      if (cred.updateRequired)
+        return { rank: 1, html: badge('text-rose-400', 'Reconnect needed', dot('bg-rose-400')) };
+      if (a.hasSyncInProgress) {
+        const slow = reqAt && (now - reqAt) > STALL_MS;
+        return slow
+          ? { rank: 2, html: badge('text-amber-400', 'Syncing · slow', dot('bg-amber-400 animate-pulse')) }
+          : { rank: 3, html: badge('text-amber-400', 'Syncing', dot('bg-amber-400 animate-pulse')) };
+      }
+      if (a.isManual) return { rank: 6, html: badge('text-slate-400', 'Manual') };
+      if (a.syncDisabled) return { rank: 6, html: badge('text-slate-400', 'Sync off') };
+      return { rank: 5, html: badge('text-emerald-400', 'Linked', dot('bg-emerald-500')) };
+    }
+
+    function accountUpdatedCell(iso, now) {
+      const txt = relTime(iso, now);
+      if (!txt) return { ms: 0, html: '<span class="text-slate-600">—</span>' };
+      const ms = new Date(iso).getTime();
+      const age = now - ms;
+      let cls = 'text-slate-400';
+      if (age < 6 * 3600 * 1000) cls = 'text-slate-300';
+      else if (age > 2 * 86400 * 1000) cls = 'text-amber-400/80';
+      return { ms, html: `<span class="${cls}" title="${escapeHTML(new Date(iso).toLocaleString())}">${escapeHTML(txt)}</span>` };
+    }
+
     function renderAccounts(data, c) {
       const accounts = data.accounts || [];
-      if (!accounts.length) { c.innerHTML = '<p class="text-sm text-slate-400">No accounts.</p>'; return; }
+      if (!accounts.length) {
+        accountsSyncing = false; syncingCount = 0;
+        c.innerHTML = '<p class="text-sm text-slate-400">No accounts.</p>';
+        return;
+      }
+      const now = Date.now();
+      const reqAt = (refreshState && refreshState.last_requested_at)
+        ? new Date(refreshState.last_requested_at).getTime() : null;
+      syncingCount = 0;
       const rows = accounts.map(a => {
         const type = (a.type || {}).display || (a.type || {}).name || '';
         const inst = (a.institution || {}).name || ((a.credential || {}).institution || {}).name || '';
@@ -236,18 +306,27 @@
           balanceHTML = `<span class="${cls}">${fmtMoney(bal)}</span>`;
         }
 
+        if (a.hasSyncInProgress) syncingCount++;
+        const status = accountStatusCell(a, reqAt, now);
+        const updated = accountUpdatedCell(a.displayLastUpdatedAt || a.updatedAt, now);
+
         return {
           name: a.displayName || a.name || '',
           type,
           institution: inst,
+          status: status.rank, statusHTML: status.html,
+          updated: updated.ms, updatedHTML: updated.html,
           balance: Number(bal) || 0,
           balanceHTML,
         };
       });
+      accountsSyncing = syncingCount > 0;
       sortableTable(c, [
         { key: 'name', label: 'Name' },
         { key: 'type', label: 'Type' },
         { key: 'institution', label: 'Institution' },
+        { key: 'status', label: 'Status' },
+        { key: 'updated', label: 'Updated' },
         { key: 'balance', label: 'Balance', align: 'right' },
       ], rows, { key: 'type', dir: 'asc' });
     }
@@ -393,15 +472,17 @@
       { id: 'card-api', url: 'api/accounts', render: renderApi },
     ];
 
-    async function loadCard(card) {
+    // quiet=true skips the skeleton and keeps the last good render on failure,
+    // so periodic live reloads (during a sync) don't flicker.
+    async function loadCard(card, quiet) {
       const body = document.querySelector('#' + card.id + ' [data-body]');
-      body.innerHTML = skeleton(3);
+      if (!quiet) body.innerHTML = skeleton(3);
       try {
         const data = await fetchJSON(card.url);
         body.innerHTML = '';
         card.render(data, body);
       } catch (e) {
-        body.innerHTML = errorBlock(e.message);
+        if (!quiet) body.innerHTML = errorBlock(e.message);
       }
     }
 
@@ -414,59 +495,119 @@
 
     // --- Account refresh (Monarch re-sync) -----------------------------
     // "Sync" asks Monarch to pull fresh data from each institution (slow), as
-    // opposed to "Refresh" which just reloads what the server already has. The
-    // server also fires syncs at the configured times; we poll its status so
-    // the UI reflects scheduled syncs we didn't start.
+    // opposed to "Refresh" which just reloads what the server already has. We no
+    // longer wait on a server-side timeout; once a sync is requested (here OR by
+    // the server's scheduler), we watch each account's hasSyncInProgress and
+    // quietly reload the Accounts table until every account is done — so
+    // per-account progress, stragglers, and stalls are visible live.
 
     let refreshState = null;
-    let lastRunning = false;
-    let pollGen = 0;            // bumping this retires any other polling loop
+    let seenRequestedAt;          // last last_requested_at acted on (undefined = not yet baselined)
+    let accountsSyncing = false;  // any account hasSyncInProgress, from the last render
+    let syncingCount = 0;         // how many accounts are mid-sync, from the last render
+    let syncActive = false;       // are we actively tracking an in-progress sync
+    let statusGen = 0;            // retires the status poll loop
+    let trackGen = 0;             // retires the sync-tracking loop
     let countdownTarget = null;
     let countdownTimer = null;
 
-    function flashSyncStatus(cls, label) {
+    function flashSyncStatus(cls, label, title) {
       const el = document.getElementById('sync-status');
       el.className = 'text-xs ' + cls;
       el.textContent = label;
+      if (title) el.title = title; else el.removeAttribute('title');
       el.classList.remove('hidden');
       clearTimeout(el._hideTimer);
-      el._hideTimer = setTimeout(() => { el.classList.add('hidden'); el._hideTimer = null; }, 5000);
+      el._hideTimer = setTimeout(() => { el.classList.add('hidden'); el._hideTimer = null; }, 6000);
+    }
+
+    function showSyncing(count) {
+      const el = document.getElementById('sync-status');
+      document.getElementById('sync').classList.add('hidden');
+      clearTimeout(el._hideTimer); el._hideTimer = null;
+      const reqAt = (refreshState && refreshState.last_requested_at)
+        ? new Date(refreshState.last_requested_at).getTime() : null;
+      const slow = reqAt && (Date.now() - reqAt) > STALL_MS;
+      const n = (count && count > 0) ? ` ${count} account${count > 1 ? 's' : ''}` : '';
+      el.className = 'text-xs text-amber-400 flex items-center gap-2';
+      el.removeAttribute('title');
+      el.innerHTML = `<span class="h-2 w-2 rounded-full bg-amber-400 animate-pulse"></span>${escapeHTML((slow ? 'Still syncing' : 'Syncing') + n + '…')}`;
+      el.classList.remove('hidden');
     }
 
     function applyRefreshState(s) {
+      const prev = refreshState;
       refreshState = s;
-      const syncBtn = document.getElementById('sync');
-      const statusEl = document.getElementById('sync-status');
 
-      if (s.running) {
-        syncBtn.classList.add('hidden');
-        statusEl.className = 'text-xs text-amber-400 flex items-center gap-2';
-        statusEl.innerHTML = '<span class="h-2 w-2 rounded-full bg-amber-400 animate-pulse"></span>Syncing…';
-        statusEl.classList.remove('hidden');
-        clearTimeout(statusEl._hideTimer);
-        statusEl._hideTimer = null;
-      } else {
-        syncBtn.classList.remove('hidden');
-        if (lastRunning) {
-          // Just finished — show a brief outcome chip.
-          const map = {
-            success: ['text-emerald-400', 'Synced'],
-            timeout: ['text-amber-400', 'Sync timed out'],
-            error: ['text-rose-400', 'Sync failed'],
-          };
-          const [cls, label] = map[s.last_result] || ['text-slate-400', s.last_result || 'Done'];
-          flashSyncStatus(cls, label);
-        } else if (!statusEl._hideTimer) {
-          statusEl.classList.add('hidden');
-        }
+      // A request that failed outright (auth lost, no accounts, Monarch error).
+      if (s.last_result === 'error' && (!prev || prev.last_result !== 'error')) {
+        stopTracking();
+        flashSyncStatus('text-rose-400', 'Sync request failed', s.last_error || '');
       }
 
-      // Reload dashboard data once when a sync transitions running -> done.
-      if (lastRunning && !s.running) loadAll();
-      lastRunning = s.running;
+      // Notice a newly requested sync — manual or server-scheduled — and track it.
+      if (seenRequestedAt === undefined) {
+        seenRequestedAt = s.last_requested_at || null;   // baseline; don't fire on first load
+      } else if (s.last_requested_at && s.last_requested_at !== seenRequestedAt) {
+        seenRequestedAt = s.last_requested_at;
+        enterSyncMode();
+      }
 
-      // Hide the countdown while a sync is running (its target is in the past).
-      setCountdownTarget(s.running ? null : s.next_scheduled_at);
+      // Hide the countdown while a sync is running.
+      setCountdownTarget(syncActive ? null : s.next_scheduled_at);
+    }
+
+    function enterSyncMode() {
+      if (syncActive) return;
+      syncActive = true;
+      showSyncing(syncingCount);
+      setCountdownTarget(null);
+      trackSync();
+    }
+
+    function stopTracking() {
+      trackGen++;          // retire the tracking loop
+      syncActive = false;
+      document.getElementById('sync').classList.remove('hidden');
+      setCountdownTarget(refreshState && refreshState.next_scheduled_at);
+    }
+
+    function finishSync() {
+      stopTracking();
+      flashSyncStatus('text-emerald-400', 'Synced');
+      loadAll();           // pull freshly-synced balances into every card
+    }
+
+    // Watch the accounts until none report hasSyncInProgress. We *stop watching*
+    // after a long cap (Monarch can leave a sync flagged for a very long time),
+    // but never call that a failure — the Accounts table keeps showing the live
+    // per-account state, including anything stuck on "Syncing · slow".
+    async function trackSync() {
+      const myGen = ++trackGen;
+      const t0 = Date.now();
+      const CAP_MS = 30 * 60 * 1000;
+      const accountsCard = CARDS.find(c => c.id === 'card-accounts');
+      let everSynced = false;
+      await sleep(4000);   // give Monarch a beat to flag the sync in progress
+      while (myGen === trackGen && syncActive) {
+        await loadCard(accountsCard, true);    // quiet reload, no skeleton flash
+        if (myGen !== trackGen) return;
+        if (accountsSyncing) everSynced = true;
+        showSyncing(syncingCount);
+        // Done once we've seen a sync clear, or a grace period passed with
+        // nothing in progress (e.g. a very fast or already-finished sync).
+        if (!accountsSyncing && (everSynced || Date.now() - t0 > 30000)) {
+          finishSync();
+          return;
+        }
+        if (Date.now() - t0 > CAP_MS) {
+          stopTracking();
+          flashSyncStatus('text-amber-400', 'Still syncing on Monarch — see Accounts');
+          loadAll();
+          return;
+        }
+        await sleep(5000);
+      }
     }
 
     function setCountdownTarget(iso) {
@@ -500,15 +641,17 @@
       el.textContent = 'next sync in ' + txt;
     }
 
+    // Always-on, lightweight poll of the in-memory server status. It catches
+    // server-scheduled syncs (via last_requested_at changing) and surfaces a
+    // failed request; the heavier per-account watching is done by trackSync.
     async function pollRefreshStatus() {
-      const myGen = ++pollGen;  // retire any previously running loop
-      while (myGen === pollGen) {
+      const myGen = ++statusGen;
+      while (myGen === statusGen) {
         try {
           applyRefreshState(await fetchJSON('api/refresh/status'));
         } catch (e) { /* transient; try again next tick */ }
-        if (myGen !== pollGen) break;
-        // Poll fast while a sync runs, slow when idle.
-        await sleep((refreshState && refreshState.running) ? 3000 : 20000);
+        if (myGen !== statusGen) break;
+        await sleep(syncActive ? 8000 : 20000);
       }
     }
 
@@ -516,10 +659,13 @@
       const btn = document.getElementById('sync');
       btn.disabled = true;
       try {
-        applyRefreshState(await fetchJSON('api/refresh/sync', { method: 'POST' }));
-        pollRefreshStatus();  // restart polling at the fast cadence immediately
+        await fetchJSON('api/refresh/sync', { method: 'POST' });
+        // We initiated it — baseline the marker so the status poll doesn't
+        // double-trigger, then start watching accounts right away.
+        seenRequestedAt = (refreshState && refreshState.last_requested_at) || seenRequestedAt;
+        enterSyncMode();
       } catch (e) {
-        flashSyncStatus('text-rose-400', 'Sync failed to start');
+        flashSyncStatus('text-rose-400', 'Sync failed to start', String(e));
       } finally {
         btn.disabled = false;
       }
@@ -655,6 +801,7 @@
       try {
         await ensureReady();
         await loadAll();
+        if (accountsSyncing) enterSyncMode();   // page opened while a sync was running
         pollRefreshStatus();  // begin watching refresh status (scheduled + manual)
       } catch (e) {
         // ensureReady already rendered the error banner; leave cards in skeleton state.
