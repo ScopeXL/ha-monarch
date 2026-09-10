@@ -31,13 +31,23 @@ Monarch account — keep it that way.
 ## Running it
 
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+uv venv --python 3.13
+uv pip install -r requirements.txt
 cp .env.example .env   # then fill in MONARCH_EMAIL / MONARCH_PASSWORD / MONARCH_MFA_SECRET
 
-python monarch.py --balance     # CLI (also --accounts, --transactions, --cashflow, etc.)
-python server.py                # web dashboard + API on 127.0.0.1:8000
+uv run python monarch.py --balance  # CLI (also --accounts, --transactions, --cashflow, etc.)
+uv run python server.py             # web dashboard + API on 127.0.0.1:8000
 ```
+
+`uv run` discovers `.venv` without activation. Don't reach for
+`python3 -m venv` here: on macOS `python3` frequently resolves to
+`/usr/bin/python3` (Apple's 3.9), which silently produces a venv below the
+project's 3.10+ floor.
+
+`requirements.txt` stays the single source of dependency truth — the add-on
+`Dockerfile` pip-installs it directly. Don't add a `pyproject.toml`/`uv.lock`
+alongside it; a second dependency list would drift out of sync with the
+container build.
 
 The server binds `127.0.0.1` by default; override with `MONARCH_HOST` / `MONARCH_PORT`.
 Endpoints return 503 until the one-time MFA login completes (via dashboard or

@@ -6,11 +6,33 @@ A small read-only CLI for querying [Monarch Money](https://www.monarchmoney.com/
 
 Requires Python 3.10+.
 
+With [uv](https://docs.astral.sh/uv/) (recommended — pins the interpreter explicitly
+and installs in seconds):
+
+```sh
+uv venv --python 3.13
+uv pip install -r requirements.txt
+```
+
+`uv run` finds `.venv` on its own, so there's nothing to activate — prefix the
+commands below with it (`uv run python monarch.py --balance`).
+
+<details>
+<summary>Without uv</summary>
+
 ```sh
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
+
+Check what `python3` actually resolves to first. On macOS it's often
+`/usr/bin/python3` — Apple's system Python, still 3.9 — which is below this
+project's floor and will fail at import time. `python3 --version` before you
+create the venv, or pass a known-good interpreter explicitly
+(`/opt/homebrew/bin/python3.13 -m venv .venv`).
+
+</details>
 
 Copy the env template and fill in your Monarch credentials:
 
