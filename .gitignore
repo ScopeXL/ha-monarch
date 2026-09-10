@@ -7,3 +7,8 @@ venv/
 
 # Claude Code local (personal) settings — keep .claude/settings.json shared
 .claude/settings.local.json
+
+# monarch-budget Claude project workspace (reports + the family's financial data)
+budget/
+# files the Cowork desktop app drops here when this folder is connected
+Claude outputs/
