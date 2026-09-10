@@ -80,8 +80,9 @@ When you change app code that add-on users should get (in `monarch.py`,
 `server.py`, `static/`) and a tagged release is therefore needed, **bump the
 patch (third) version component automatically** — e.g. `1.0.3` → `1.0.4` — in
 `monarch_addon/config.yaml`, commit it, then create and push a matching
-annotated `v<version>` git tag and a GitHub release (`gh release create`). Do
-this on your own without asking. Only ever auto-increment the patch number; the
+annotated `v<version>` git tag and a GitHub release (`gh release create` —
+the CLI is installed and authenticated, see below). Do this on your own
+without asking. Only ever auto-increment the patch number; the
 maintainer bumps the major/minor version by hand, and you resume
 patch-incrementing from whatever they set.
 
@@ -92,6 +93,12 @@ user prefers not to be asked each time. Specifically:
 
 - After completing a self-contained change (a fix, a feature, a doc update),
   stage the relevant files, commit with a clear message, and **push to `main`**.
+- `origin` is the SSH remote (`git@github.com:ScopeXL/ha-monarch.git`), which
+  authenticates from the local SSH key — pushes work non-interactively. The
+  HTTPS remote does not; it prompts for a username and fails.
+- The `gh` CLI is installed and authenticated, so use it for GitHub work
+  (`gh release create`, `gh pr`, `gh issue`, `gh api`) instead of asking the
+  user to click through the web UI.
 - Group related edits into one logical commit; don't commit half-finished work
   or leave the tree dirty across unrelated changes.
 - Commit message style (from the existing history): a short imperative summary
