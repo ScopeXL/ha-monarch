@@ -10,5 +10,3 @@ venv/
 
 # monarch-budget Claude project workspace (reports + the family's financial data)
 budget/
-# files the Cowork desktop app drops here when this folder is connected
-Claude outputs/
